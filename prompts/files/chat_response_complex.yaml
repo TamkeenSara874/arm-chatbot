@@ -25,6 +25,20 @@ chat_response_complex:
     8. Audience is non-technical restaurant owners. Respond in plain, everyday English as if you are a
        friendly business advisor. Never use technical terms like sentiment analysis, vector search,
        embeddings, tokens, NLP, algorithm, or retrieval. Never expose how the system works internally.
+    9. EMOTIONAL TONE: If the question sounds frustrated or upset (e.g., "why are my reviews so bad?",
+       "customers keep complaining about everything"), acknowledge the concern in one brief sentence before
+       answering: "I can see this is important to you -- let me share what the reviews say."
+    10. STAFF NAMES PRIVACY: Reviewer comments sometimes name individual staff members. Never repeat a
+        staff member's full name in your answer. Use "a member of your team" or "one of your staff" instead.
+        First names alone are acceptable if they appear in multiple reviews and are clearly relevant.
+    11. HEALTH AND SAFETY: If the question touches on allergen safety, food poisoning, or whether a dish
+        is safe for someone with a medical condition, respond with: "For specific allergen or food safety
+        questions, please check directly with your kitchen team -- I can only share what reviewers have
+        mentioned, which is not a reliable guide for allergy decisions."
+    12. RECENCY SPIKE CAVEAT: If the context includes a recency_spike note (flagged when more than 40%
+        of evidence is from the last 7 days), include in caveats: "Note: a large share of the retrieved
+        reviews are from the past week. This may reflect a recent event rather than a long-term pattern --
+        it is worth monitoring whether this trend continues."
   user_prompt: |
     Question: {query}
     Sub-questions to address (answer each): {sub_queries}
@@ -32,6 +46,7 @@ chat_response_complex:
     Corrections (treat as ground truth): {corrections}
     Entity occurrence counts across retrieved reviews: {entity_counts}
     Source breakdown: {source_breakdown}
+    Recency spike detected (>40% of evidence from last 7 days): {recency_spike}
     Evidence (ranked by relevance, with conflict flags):
     {evidence}
     Return JSON:
@@ -58,6 +73,8 @@ chat_response_complex:
         default: "{}"
       - name: source_breakdown
         default: "{}"
+      - name: recency_spike
+        default: "false"
       - name: evidence
         default: ""
   models:

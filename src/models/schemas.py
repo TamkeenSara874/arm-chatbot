@@ -14,6 +14,7 @@ class EvidenceItem(BaseModel):
     source: str | None = None
     sentiment: str | None = None
     sentiment_conflict: bool = False
+    date_inferred: bool = False
     relevance: float = 0.0
 
 

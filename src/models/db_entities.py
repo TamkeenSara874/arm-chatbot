@@ -35,9 +35,7 @@ class ChatSession(Base):
     user_identifier: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     dietary_flags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_activity_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -64,14 +62,10 @@ class ChatMessage(Base):
     )
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # "user" | "assistant"
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    retrieved_chunk_ids: Mapped[list[str] | None] = mapped_column(
-        ARRAY(String), nullable=True
-    )
+    retrieved_chunk_ids: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     model_used: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     session: Mapped["ChatSession"] = relationship("ChatSession", back_populates="messages")
 
@@ -91,12 +85,8 @@ class ChatCorrection(Base):
     corrected_response: Mapped[str] = mapped_column(Text, nullable=False)
     correction_count: Mapped[int] = mapped_column(Integer, default=1)
     is_consensus: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ReviewChunkMeta(Base):
@@ -127,9 +117,9 @@ class ReviewChunkMeta(Base):
     has_injection_attempt: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    # True when createdAt was unparseable and datetime.now() was used as fallback
+    date_inferred: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class IngestJob(Base):
@@ -152,9 +142,5 @@ class IngestJob(Base):
     total_chunks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     skipped_empty: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

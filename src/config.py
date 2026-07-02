@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     qdrant_api_key: str = ""
     qdrant_collection_reviews: str = "review_chunks"
     qdrant_collection_corrections: str = "correction_embeddings"
+    qdrant_collection_session_memory: str = "session_memory"
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -46,8 +47,9 @@ class Settings(BaseSettings):
 
     # Session
     session_ttl_days: int = 30
-    session_context_messages: int = 20
-    session_summary_trigger: int = 20
+    session_recent_messages: int = 5
+    session_relevant_k: int = 3
+    session_summary_trigger: int = 50
     session_context_token_budget: int = 6000
 
     # Ingestion

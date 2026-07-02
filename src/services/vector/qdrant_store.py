@@ -34,13 +34,9 @@ class QdrantStore(BaseVectorStore):
         ]
 
         async def _call() -> None:
-            await self.client.upsert(
-                collection_name=collection, points=qdrant_points, wait=True
-            )
+            await self.client.upsert(collection_name=collection, points=qdrant_points, wait=True)
 
-        await fetch_with_retry(
-            lambda: qdrant_breaker.call_async(_call), label="qdrant.upsert"
-        )
+        await fetch_with_retry(lambda: qdrant_breaker.call_async(_call), label="qdrant.upsert")
 
     async def search(
         self,
@@ -62,8 +58,7 @@ class QdrantStore(BaseVectorStore):
                 with_payload=True,
             )
             return [
-                SearchResult(id=str(r.id), score=r.score, payload=r.payload or {})
-                for r in results
+                SearchResult(id=str(r.id), score=r.score, payload=r.payload or {}) for r in results
             ]
 
         return await fetch_with_retry(
@@ -72,17 +67,11 @@ class QdrantStore(BaseVectorStore):
 
     async def delete(self, collection: str, ids: list[str]) -> None:
         async def _call() -> None:
-            await self.client.delete(
-                collection_name=collection, points_selector=ids, wait=True
-            )
+            await self.client.delete(collection_name=collection, points_selector=ids, wait=True)
 
-        await fetch_with_retry(
-            lambda: qdrant_breaker.call_async(_call), label="qdrant.delete"
-        )
+        await fetch_with_retry(lambda: qdrant_breaker.call_async(_call), label="qdrant.delete")
 
-    async def update_payload(
-        self, collection: str, point_id: str, payload: dict[str, Any]
-    ) -> None:
+    async def update_payload(self, collection: str, point_id: str, payload: dict[str, Any]) -> None:
         async def _call() -> None:
             await self.client.set_payload(
                 collection_name=collection,
@@ -103,6 +92,14 @@ class QdrantStore(BaseVectorStore):
                 FieldCondition(
                     key="restaurant_id",
                     match=MatchValue(value=filters["restaurant_id"]),
+                )
+            )
+
+        if "session_id" in filters:
+            conditions.append(
+                FieldCondition(
+                    key="session_id",
+                    match=MatchValue(value=str(filters["session_id"])),
                 )
             )
 

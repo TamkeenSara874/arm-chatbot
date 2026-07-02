@@ -18,9 +18,8 @@ class RedisCache:
         self.ttl = ttl_seconds
 
     def _key(self, restaurant_id: int, query: str) -> str:
-        raw = f"{restaurant_id}:{query.strip().lower()}"
-        digest = hashlib.sha256(raw.encode()).hexdigest()
-        return f"chat:response:{digest}"
+        digest = hashlib.sha256(query.strip().lower().encode()).hexdigest()
+        return f"chat:response:{restaurant_id}:{digest}"
 
     async def get(self, restaurant_id: int, query: str) -> dict[str, Any] | None:
         if self.ttl <= 0:
@@ -45,6 +44,21 @@ class RedisCache:
             await self.client.setex(key, self.ttl, json.dumps(value))
         except Exception as exc:
             logger.warning("cache_set_failed", key=key, error=str(exc))
+
+    async def invalidate_restaurant(self, restaurant_id: int) -> int:
+        """Delete all cached responses for a restaurant. Returns the number of keys deleted."""
+        pattern = f"chat:response:{restaurant_id}:*"
+        try:
+            keys: list[str] = []
+            async for key in self.client.scan_iter(match=pattern, count=100):
+                keys.append(key)
+            if keys:
+                deleted = await self.client.delete(*keys)
+                logger.info("cache_invalidated", restaurant_id=restaurant_id, keys_deleted=deleted)
+                return deleted
+        except Exception as exc:
+            logger.warning("cache_invalidate_failed", restaurant_id=restaurant_id, error=str(exc))
+        return 0
 
     async def close(self) -> None:
         await self.client.aclose()

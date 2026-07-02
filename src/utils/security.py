@@ -9,12 +9,13 @@ from src.utils.metrics import injection_attempts_detected_total, output_validati
 logger = structlog.get_logger()
 
 INJECTION_PATTERNS: list[str] = [
-    r"ignore\s+(previous|prior|all)\s+instructions",
+    r"ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions",
+    r"ignore\s+all\s+instructions",
     r"you\s+are\s+now\s+(a|an)\s+",
     r"(system|assistant|user)\s*:\s*",
     r"<\|im_(start|end)\|>",
     r"<\|endoftext\|>",
-    r"forget\s+(your|all|previous)\s+(instructions|context|training)",
+    r"forget\s+(?:your|all|previous)\s+(?:previous\s+)?(?:instructions|context|training)",
     r"new\s+(instructions|persona|role)\s*:",
     r"do\s+not\s+(follow|obey)\s+(your|the)\s+(previous|prior|original)",
     r"\[\[.*?injection.*?\]\]",
@@ -99,9 +100,7 @@ def check_file_upload(filename: str, content_type: str, size_bytes: int) -> None
 
     max_bytes = get_settings().ingest_max_file_size_mb * 1024 * 1024
     if size_bytes > max_bytes:
-        raise ValueError(
-            f"File too large: {size_bytes} bytes exceeds {max_bytes} byte limit"
-        )
+        raise ValueError(f"File too large: {size_bytes} bytes exceeds {max_bytes} byte limit")
 
     allowed_types = {"text/csv", "application/json", "text/plain"}
     if content_type not in allowed_types:

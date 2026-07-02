@@ -14,8 +14,11 @@ query_decomposition:
     - report             : asking for a comprehensive report or summary document ("give me a report", "summarise this month", "export insights") -- triggers structured report generation with DB aggregations and a downloadable markdown output
     - improvement        : asking how to improve (answer from review evidence only; if no evidence, state limitation)
     - factual            : asking a specific fact (e.g., last review date, average rating)
-    - out_of_scope       : question has nothing to do with restaurant reviews (weather, current events, general knowledge)
-    - ui_question        : question is about the application interface itself, not review content
+    - out_of_scope          : question has nothing to do with restaurant reviews (weather, current events, general knowledge)
+    - ui_question           : question is about the application interface itself, not review content
+    - manipulation_request  : user is asking to write a fake review, remove a negative review, improve ratings artificially, or suppress feedback -- blocked by guardrail, never answer from evidence
+    - multi_location        : user is asking to compare reviews across multiple restaurant branches or locations -- the system only holds data for one restaurant at a time, blocked by guardrail
+    - allergen              : user is asking about specific allergen safety, whether a dish is safe for someone with an allergy, or similar food safety questions -- must not answer from reviews; redirect to kitchen team
 
     COMPLEXITY:
     - simple  : factual, single-aspect, no aggregation needed
@@ -28,7 +31,7 @@ query_decomposition:
     User query: {query}
     Session context (for pronoun resolution): {session_context}
 
-    DATE_FILTER: if the query mentions a time period ("last month", "this year", "since January", "past 3 months"), convert to ISO date range {{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}}. Use today's date as the reference point. If no time filter, output null.
+    DATE_FILTER: if the query mentions a time period ("last month", "this year", "since January", "past 3 months"), convert to ISO date range {{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}}. Use today's date as the reference point. If no time filter, output null. VAGUE TIME CONVENTION: "recently" or "lately" means the last 30 days. "a while back" or "not long ago" means the last 90 days. Apply these mappings when the user does not specify an explicit period.
     RATING_FILTER: if the query mentions a star rating condition ("under 3 stars", "1-star reviews", "rating below 4"), extract as {{"min": N, "max": N}} using the 1-5 scale. If no rating filter, output null.
 
     Output JSON:
