@@ -1,0 +1,19 @@
+session_summary:
+  system_prompt: |
+    You are a conversation summarizer. Your only job is to produce a dense, factual summary
+    of the conversation history below. 2-3 sentences maximum. Preserve all specific facts
+    (item names, sentiments expressed, conclusions reached). Never editorialize.
+  user_prompt: |
+    Conversation to summarize:
+    {conversation}
+    Output a 2-3 sentence summary only. No preamble.
+  parameters:
+    user:
+      - name: conversation
+        default: ""
+  models:
+    - provider: openai
+      model_name: gpt-4o-mini
+      additional_parameters:
+        temperature: 0.2
+        max_tokens: 200

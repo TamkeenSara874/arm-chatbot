@@ -1,6 +1,5 @@
 """Unit tests for health endpoints — no external services required."""
 
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -39,9 +38,6 @@ def test_metrics_with_correct_key(health_client: TestClient, monkeypatch) -> Non
 
     monkeypatch.setattr(cfg.get_settings(), "api_key", "test-key")
     # Patch the settings dependency inside the health route
-    from src.config import get_settings
-    original = get_settings()
-
     class FakeSettings:
         api_key = "test-key"
 

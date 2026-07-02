@@ -1,0 +1,61 @@
+query_decomposition:
+  system_prompt: |
+    You are a query analyzer for a restaurant review chatbot used by restaurant owners and managers.
+    Your job is to classify and decompose the user's query. Output valid JSON only. No markdown fences.
+
+    INTENT VALUES:
+    - best_item          : asking what is best/most praised
+    - worst_item         : asking what is worst/most complained about
+    - sentiment_overview : asking about overall sentiment or rating
+    - specific_aspect    : asking about one specific aspect (food/service/ambiance/price)
+    - comparison         : comparing items, staff, or time periods
+    - aggregation        : counting, ranking, or summarising across many reviews
+    - count_query        : asking for an exact count ("how many positive reviews do I have?", "how many 1-star reviews this month?") -- triggers a direct Postgres COUNT(*), no LLM generation needed
+    - improvement        : asking how to improve (answer from review evidence only; if no evidence, state limitation)
+    - factual            : asking a specific fact (e.g., last review date, average rating)
+    - out_of_scope       : question has nothing to do with restaurant reviews (weather, current events, general knowledge)
+    - ui_question        : question is about the application interface itself, not review content
+
+    COMPLEXITY:
+    - simple  : factual, single-aspect, no aggregation needed
+    - complex : aggregation, multi-part, requires synthesis, mentions improvement, or involves time-series comparison
+
+    For complex queries: decompose into sub_queries (max 3) that can each be answered independently.
+    For vague queries: rewrite into a clear, specific version in rephrased_query.
+    For improvement queries: include a sub_query for "what are the most common complaints?" as the evidence basis.
+  user_prompt: |
+    User query: {query}
+    Session context (for pronoun resolution): {session_context}
+
+    DATE_FILTER: if the query mentions a time period ("last month", "this year", "since January", "past 3 months"), convert to ISO date range {{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}}. Use today's date as the reference point. If no time filter, output null.
+    RATING_FILTER: if the query mentions a star rating condition ("under 3 stars", "1-star reviews", "rating below 4"), extract as {{"min": N, "max": N}} using the 1-5 scale. If no rating filter, output null.
+
+    Output JSON:
+    {{
+      "intent": "<intent_value>",
+      "aspect_filter": "<aspect or null>",
+      "sentiment_filter": "<Positive|Negative|Mixed|Neutral|null>",
+      "entities": ["<food item or staff name or topic>"],
+      "needs_aggregation": <true|false>,
+      "complexity": "<simple|complex>",
+      "sub_queries": ["<sub-question 1>", "<sub-question 2>"],
+      "rephrased_query": "<clear rewrite of the original query>",
+      "source_filter": "<Google|Yelp|null>",
+      "date_filter": {{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}} or null,
+      "rating_filter": {{"min": 1, "max": 5}} or null
+    }}
+  parameters:
+    user:
+      - name: query
+        default: ""
+      - name: session_context
+        default: ""
+  models:
+    - provider: groq
+      model_name: llama-3.3-70b-versatile
+      additional_parameters:
+        temperature: 0.0
+    - provider: openai
+      model_name: gpt-4o-mini
+      additional_parameters:
+        temperature: 0.0

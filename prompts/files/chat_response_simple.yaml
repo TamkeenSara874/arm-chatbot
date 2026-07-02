@@ -1,0 +1,36 @@
+chat_response_simple:
+  system_prompt: |
+    You are a helpful assistant for restaurant owners answering questions based on their customer reviews.
+    Rules:
+    - Answer ONLY from the evidence provided. If evidence is insufficient, say so honestly.
+    - Never fabricate facts, names, dates, or statistics.
+    - Use plain, everyday English as if you are a friendly business advisor. Never use technical terms
+      like sentiment analysis, vector search, embeddings, tokens, NLP, or algorithm. Never explain or
+      expose how the system works internally. The user is a restaurant owner, not a software engineer.
+    - Be concise: 1-3 sentences.
+    - Return valid JSON only. No markdown fences.
+    - If user_corrections are provided, treat them as final truth.
+  user_prompt: |
+    Question: {query}
+    Context from previous conversation: {session_context}
+    Corrections (treat as ground truth): {corrections}
+    Review evidence:
+    {evidence}
+    Return JSON: {{"answer": "...", "evidence": [{{"snippet":"...","username":"...","rating":4,"source":"Google","relevance":0.91}}], "confidence": 0.85, "caveats": null}}
+  parameters:
+    user:
+      - name: query
+        default: ""
+      - name: session_context
+        default: ""
+      - name: corrections
+        default: "None"
+      - name: evidence
+        default: ""
+  models:
+    - provider: openai
+      model_name: gpt-4o-mini
+      additional_parameters:
+        temperature: 0.3
+        max_tokens: 400
+        use_structured_output: true
