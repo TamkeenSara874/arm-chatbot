@@ -11,9 +11,7 @@ logger = structlog.get_logger()
 
 
 class OpenAIEmbedder(BaseEmbedder):
-    def __init__(
-        self, api_key: str, model: str, embedding_dim: int, batch_size: int = 100
-    ) -> None:
+    def __init__(self, api_key: str, model: str, embedding_dim: int, batch_size: int = 100) -> None:
         self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
         self._dim = embedding_dim

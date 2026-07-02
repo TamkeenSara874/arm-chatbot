@@ -1,93 +1,158 @@
-"""Unit tests for retrieval module -- pure functions only (no I/O)."""
+"""Unit tests for hybrid_retrieve -- mocked vector store and sparse embedder."""
 
-from src.core.retrieval import _fuse_and_rank, _tokenize, invalidate_bm25_cache
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from src.services.vector.base import SearchResult
 
 
-def _sr(chunk_id: str, score: float, text: str = "review text") -> SearchResult:
+def _sr(chunk_id: str, score: float, restaurant_id: int = 1) -> SearchResult:
     return SearchResult(
         id=chunk_id,
         score=score,
-        payload={"text": text, "rating": 4.0, "source": "Google"},
+        payload={"text": "review text", "rating": 4.0, "restaurant_id": restaurant_id},
     )
 
 
-class TestInvalidateBM25Cache:
-    def test_invalidate_nonexistent_restaurant_is_safe(self) -> None:
-        invalidate_bm25_cache(99999)
-
-    def test_invalidate_clears_cache_entry(self) -> None:
-        from rank_bm25 import BM25Okapi
-
-        from src.core.retrieval import _bm25_cache
-
-        _bm25_cache[1234] = (BM25Okapi([["hello"]]), [{"id": "x", "text": "hello"}])
-        invalidate_bm25_cache(1234)
-        assert 1234 not in _bm25_cache
+def _mock_embedder(vector: list[float] | None = None) -> MagicMock:
+    embedder = MagicMock()
+    embedder.embed_one = AsyncMock(return_value=vector or [0.1] * 3072)
+    return embedder
 
 
-class TestTokenize:
-    def test_lowercases_words(self) -> None:
-        tokens = _tokenize("Hello World")
-        assert tokens == ["hello", "world"]
+def _sparse_patch(indices: list[int] | None = None, values: list[float] | None = None):
+    from src.services.embedding.sparse_embedder import SparseVector
 
-    def test_strips_punctuation(self) -> None:
-        tokens = _tokenize("food, drinks!")
-        assert "food" in tokens
-        assert "drinks" in tokens
-
-    def test_empty_string(self) -> None:
-        assert _tokenize("") == []
+    sv = SparseVector(indices=indices or [0, 1], values=values or [0.5, 0.5])
+    return patch("src.core.retrieval.compute_sparse_vector", AsyncMock(return_value=sv))
 
 
-class TestFuseAndRank:
-    def test_rrf_scores_merged_across_lists(self) -> None:
-        dense = [_sr("a", 0.9), _sr("b", 0.8)]
-        bm25 = [_sr("b", 8.0), _sr("c", 7.0)]
-        results = _fuse_and_rank(dense, bm25, top_k=3)
-        ids = [r.id for r in results]
-        assert "b" in ids
-        assert "a" in ids
-        assert "c" in ids
+class TestHybridRetrieve:
+    @pytest.mark.asyncio
+    async def test_passes_restaurant_id_filter(self) -> None:
+        from src.core.retrieval import hybrid_retrieve
 
-    def test_chunk_appearing_in_both_lists_ranks_higher(self) -> None:
-        dense = [_sr("shared", 0.9), _sr("dense_only", 0.85)]
-        bm25 = [_sr("shared", 7.0), _sr("bm25_only", 6.5)]
-        results = _fuse_and_rank(dense, bm25, top_k=3, rrf_k=60)
-        assert results[0].id == "shared", "Chunk in both lists should rank first"
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(return_value=[])
 
-    def test_dense_payload_takes_priority_over_bm25(self) -> None:
-        dense = [
-            SearchResult(
-                id="x", score=1.0, payload={"text": "dense payload", "food_entities": ["naan"]}
+        with _sparse_patch():
+            await hybrid_retrieve(
+                query="food quality",
+                restaurant_id=7,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
             )
-        ]
-        bm25 = [
-            SearchResult(id="x", score=5.0, payload={"text": "bm25 payload", "food_entities": []})
-        ]
-        results = _fuse_and_rank(dense, bm25, top_k=1)
-        assert results[0].payload["text"] == "dense payload"
-        assert results[0].payload["food_entities"] == ["naan"]
 
-    def test_top_k_limit_respected(self) -> None:
-        dense = [_sr(f"d{i}", 1.0 / (i + 1)) for i in range(10)]
-        bm25 = [_sr(f"b{i}", 10.0 / (i + 1)) for i in range(10)]
-        results = _fuse_and_rank(dense, bm25, top_k=5)
-        assert len(results) == 5
+        _, kw = vector_store.hybrid_search.call_args
+        assert kw["filters"]["restaurant_id"] == 7
 
-    def test_score_field_is_rrf_score(self) -> None:
-        dense = [_sr("a", 0.9)]
-        results = _fuse_and_rank(dense, [], top_k=1, rrf_k=60)
-        assert results[0].id == "a"
-        expected_rrf = 1.0 / (60 + 1)
-        assert abs(results[0].score - expected_rrf) < 1e-9
+    @pytest.mark.asyncio
+    async def test_passes_dense_and_sparse_vectors(self) -> None:
+        from src.core.retrieval import hybrid_retrieve
 
-    def test_empty_dense_uses_bm25_only(self) -> None:
-        bm25 = [_sr("bm25_chunk", 5.0)]
-        results = _fuse_and_rank([], bm25, top_k=2)
-        assert len(results) == 1
-        assert results[0].id == "bm25_chunk"
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(return_value=[])
+        dense = [0.42] * 3072
 
-    def test_empty_both_returns_empty(self) -> None:
-        results = _fuse_and_rank([], [], top_k=5)
+        with _sparse_patch(indices=[5, 10], values=[0.8, 0.2]):
+            await hybrid_retrieve(
+                query="biryani",
+                restaurant_id=1,
+                embedder=_mock_embedder(dense),
+                vector_store=vector_store,
+                collection="review_chunks",
+            )
+
+        _, kw = vector_store.hybrid_search.call_args
+        assert kw["dense_vector"] == dense
+        assert kw["sparse_indices"] == [5, 10]
+        assert kw["sparse_values"] == [0.8, 0.2]
+
+    @pytest.mark.asyncio
+    async def test_respects_top_k(self) -> None:
+        from src.core.retrieval import hybrid_retrieve
+
+        chunks = [_sr(f"c{i}", 1.0 / (i + 1)) for i in range(20)]
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(return_value=chunks)
+
+        with _sparse_patch():
+            results = await hybrid_retrieve(
+                query="service",
+                restaurant_id=1,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
+                top_k=4,
+            )
+
+        assert len(results) == 4
+
+    @pytest.mark.asyncio
+    async def test_passes_date_and_rating_filters(self) -> None:
+        from src.core.retrieval import hybrid_retrieve
+
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(return_value=[])
+
+        with _sparse_patch():
+            await hybrid_retrieve(
+                query="recent reviews",
+                restaurant_id=1,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
+                date_from=1700000000.0,
+                date_to=1800000000.0,
+                rating_min=3.0,
+                rating_max=5.0,
+            )
+
+        _, kw = vector_store.hybrid_search.call_args
+        f = kw["filters"]
+        assert f["date_from"] == 1700000000.0
+        assert f["date_to"] == 1800000000.0
+        assert f["rating_min"] == 3.0
+        assert f["rating_max"] == 5.0
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_hybrid_search_failure(self) -> None:
+        from src.core.retrieval import hybrid_retrieve
+
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(side_effect=RuntimeError("Qdrant down"))
+
+        with _sparse_patch():
+            results = await hybrid_retrieve(
+                query="anything",
+                restaurant_id=1,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
+            )
+
         assert results == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_embedding_fails(self) -> None:
+        from src.core.retrieval import hybrid_retrieve
+
+        embedder = MagicMock()
+        embedder.embed_one = AsyncMock(side_effect=RuntimeError("OpenAI down"))
+
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(return_value=[])
+
+        with _sparse_patch():
+            results = await hybrid_retrieve(
+                query="anything",
+                restaurant_id=1,
+                embedder=embedder,
+                vector_store=vector_store,
+                collection="review_chunks",
+            )
+
+        assert results == []
+        assert not vector_store.hybrid_search.called

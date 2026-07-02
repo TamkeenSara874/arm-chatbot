@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
@@ -9,11 +10,11 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.chunking import chunk_text
-from src.core.retrieval import invalidate_bm25_cache
 from src.models.db_entities import IngestJob, ReviewChunkMeta
 from src.services.cache import RedisCache
 from src.services.database import get_session_factory
 from src.services.embedding.base import BaseEmbedder
+from src.services.embedding.sparse_embedder import compute_sparse_vectors_batch
 from src.services.llm.base import BaseLLMClient
 from src.services.vector.base import BaseVectorStore
 from src.utils.metrics import ingest_reviews_total
@@ -222,18 +223,24 @@ async def _run(
         for point, entities in zip(batch, entities_per_chunk, strict=True):
             point["food_entities"] = entities
 
-    # Embedding and Qdrant upsert (batched)
+    # Embedding and Qdrant upsert (batched) with named dense + sparse vectors
     for i in range(0, len(all_points), batch_size):
         batch = all_points[i : i + batch_size]
         texts = [p["text"] for p in batch]
-        vectors = await embedder.embed(texts)
+        dense_vectors, sparse_vectors = await asyncio.gather(
+            embedder.embed(texts),
+            compute_sparse_vectors_batch(texts),
+        )
         qdrant_points = [
             {
                 "id": p["chunk_id"],
-                "vector": v,
+                "vector": {
+                    "dense": dv,
+                    "sparse": {"indices": sv.indices, "values": sv.values},
+                },
                 "payload": {k: val for k, val in p.items() if k != "chunk_id"},
             }
-            for p, v in zip(batch, vectors, strict=True)
+            for p, dv, sv in zip(batch, dense_vectors, sparse_vectors, strict=True)
         ]
         await vector_store.upsert(reviews_collection, qdrant_points)
 
@@ -250,7 +257,6 @@ async def _run(
     await db_session.commit()
 
     # Cache invalidation
-    invalidate_bm25_cache(restaurant_id)
     deleted = await cache.invalidate_restaurant(restaurant_id)
     logger.info(
         "ingest_caches_invalidated",

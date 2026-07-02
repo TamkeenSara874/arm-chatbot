@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     openai_embed_model: str = "text-embedding-3-large"
     groq_decomp_model: str = "llama-3.3-70b-versatile"
     # Cross-encoder reranker (runs locally, no API cost)
-    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_model: str = "BAAI/bge-reranker-base"
 
     # Embeddings
     embedding_dim: int = 3072

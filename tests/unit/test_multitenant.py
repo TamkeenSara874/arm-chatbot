@@ -1,18 +1,10 @@
 """Verify cross-restaurant data isolation at the retrieval layer."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.services.vector.base import SearchResult
-
-
-def _mock_db(rows: list | None = None) -> MagicMock:
-    db_result = MagicMock()
-    db_result.scalars.return_value.all.return_value = rows or []
-    db = MagicMock()
-    db.execute = AsyncMock(return_value=db_result)
-    return db
 
 
 def _mock_embedder() -> MagicMock:
@@ -21,26 +13,34 @@ def _mock_embedder() -> MagicMock:
     return embedder
 
 
+def _sparse_patch():
+    """Patch compute_sparse_vector so tests need no fastembed install."""
+    from src.services.embedding.sparse_embedder import SparseVector
+
+    mock = AsyncMock(return_value=SparseVector(indices=[0, 1], values=[0.5, 0.5]))
+    return patch("src.core.retrieval.compute_sparse_vector", mock)
+
+
 class TestMultitenantIsolation:
     @pytest.mark.asyncio
     async def test_vector_store_receives_correct_restaurant_filter(self) -> None:
-        """ANN search must always be scoped to the requested restaurant_id."""
+        """Hybrid search must always be scoped to the requested restaurant_id."""
         from src.core.retrieval import hybrid_retrieve
 
         vector_store = MagicMock()
-        vector_store.search = AsyncMock(return_value=[])
+        vector_store.hybrid_search = AsyncMock(return_value=[])
 
-        await hybrid_retrieve(
-            query="best dish",
-            restaurant_id=42,
-            embedder=_mock_embedder(),
-            vector_store=vector_store,
-            collection="review_chunks",
-            db_session=_mock_db(),
-        )
+        with _sparse_patch():
+            await hybrid_retrieve(
+                query="best dish",
+                restaurant_id=42,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
+            )
 
-        assert vector_store.search.called
-        _, call_kwargs = vector_store.search.call_args
+        assert vector_store.hybrid_search.called
+        _, call_kwargs = vector_store.hybrid_search.call_args
         filters = call_kwargs.get("filters", {})
         assert filters.get("restaurant_id") == 42, (
             "Vector store search must filter by restaurant_id; "
@@ -53,19 +53,19 @@ class TestMultitenantIsolation:
         from src.core.retrieval import hybrid_retrieve
 
         vector_store = MagicMock()
-        vector_store.search = AsyncMock(return_value=[])
+        vector_store.hybrid_search = AsyncMock(return_value=[])
 
-        for restaurant_id in [1, 2]:
-            await hybrid_retrieve(
-                query="food quality",
-                restaurant_id=restaurant_id,
-                embedder=_mock_embedder(),
-                vector_store=vector_store,
-                collection="review_chunks",
-                db_session=_mock_db(),
-            )
+        with _sparse_patch():
+            for restaurant_id in [1, 2]:
+                await hybrid_retrieve(
+                    query="food quality",
+                    restaurant_id=restaurant_id,
+                    embedder=_mock_embedder(),
+                    vector_store=vector_store,
+                    collection="review_chunks",
+                )
 
-        calls = vector_store.search.call_args_list
+        calls = vector_store.hybrid_search.call_args_list
         assert len(calls) == 2
         seen_ids = {c[1].get("filters", {}).get("restaurant_id") for c in calls}
         assert seen_ids == {1, 2}, "Each restaurant must have its own isolated search call"
@@ -80,16 +80,16 @@ class TestMultitenantIsolation:
             SearchResult(id="r1c2", score=0.8, payload={"text": "service", "restaurant_id": 1}),
         ]
         vector_store = MagicMock()
-        vector_store.search = AsyncMock(return_value=restaurant_1_chunks)
+        vector_store.hybrid_search = AsyncMock(return_value=restaurant_1_chunks)
 
-        results = await hybrid_retrieve(
-            query="food quality",
-            restaurant_id=1,
-            embedder=_mock_embedder(),
-            vector_store=vector_store,
-            collection="review_chunks",
-            db_session=_mock_db(),
-        )
+        with _sparse_patch():
+            results = await hybrid_retrieve(
+                query="food quality",
+                restaurant_id=1,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
+            )
 
         for result in results:
             rid = result.payload.get("restaurant_id")

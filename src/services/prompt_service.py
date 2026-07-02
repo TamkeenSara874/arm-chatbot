@@ -45,9 +45,7 @@ class PromptLoader:
         try:
             user = user_template.format(**kwargs)
         except KeyError as exc:
-            raise ValueError(
-                f"Prompt '{name}' missing required variable: {exc}"
-            ) from exc
+            raise ValueError(f"Prompt '{name}' missing required variable: {exc}") from exc
         return system, user
 
 

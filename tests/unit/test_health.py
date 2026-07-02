@@ -26,9 +26,7 @@ def test_metrics_requires_auth(health_client: TestClient) -> None:
 
 
 def test_metrics_requires_correct_key(health_client: TestClient) -> None:
-    response = health_client.get(
-        "/health/metrics", headers={"Authorization": "Bearer wrong-key"}
-    )
+    response = health_client.get("/health/metrics", headers={"Authorization": "Bearer wrong-key"})
     assert response.status_code == 403
 
 
@@ -37,6 +35,7 @@ def test_metrics_with_correct_key(health_client: TestClient, monkeypatch) -> Non
     from src import config as cfg
 
     monkeypatch.setattr(cfg.get_settings(), "api_key", "test-key")
+
     # Patch the settings dependency inside the health route
     class FakeSettings:
         api_key = "test-key"
@@ -45,8 +44,6 @@ def test_metrics_with_correct_key(health_client: TestClient, monkeypatch) -> Non
 
     monkeypatch.setattr(h_module, "get_settings", lambda: FakeSettings())
 
-    response = health_client.get(
-        "/health/metrics", headers={"Authorization": "Bearer test-key"}
-    )
+    response = health_client.get("/health/metrics", headers={"Authorization": "Bearer test-key"})
     # With correct key, should not be 403
     assert response.status_code in (200, 403)  # 403 if monkeypatch didn't apply cleanly

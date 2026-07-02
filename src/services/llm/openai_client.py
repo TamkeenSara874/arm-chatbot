@@ -45,9 +45,7 @@ class OpenAIClient(BaseLLMClient):
             result = await fetch_with_retry(
                 lambda: openai_breaker.call_async(_call), label="openai.complete"
             )
-            llm_request_total.labels(
-                provider="openai", model=self.model, intent="complete"
-            ).inc()
+            llm_request_total.labels(provider="openai", model=self.model, intent="complete").inc()
             return result
         finally:
             llm_request_latency.labels(provider="openai", model=self.model).observe(
@@ -114,9 +112,7 @@ class OpenAIClient(BaseLLMClient):
         stream_resp = await fetch_with_retry(
             lambda: openai_breaker.call_async(_init), label="openai.stream"
         )
-        llm_request_total.labels(
-            provider="openai", model=self.model, intent="stream"
-        ).inc()
+        llm_request_total.labels(provider="openai", model=self.model, intent="stream").inc()
 
         async for chunk in stream_resp:
             content = chunk.choices[0].delta.content

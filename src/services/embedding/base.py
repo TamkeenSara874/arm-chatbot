@@ -6,12 +6,10 @@ class BaseEmbedder(ABC):
 
     @property
     @abstractmethod
-    def dim(self) -> int:
-        ...
+    def dim(self) -> int: ...
 
     @abstractmethod
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        ...
+    async def embed(self, texts: list[str]) -> list[list[float]]: ...
 
     async def embed_one(self, text: str) -> list[float]:
         results = await self.embed([text])

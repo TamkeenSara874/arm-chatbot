@@ -7,9 +7,13 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.models import (
     FieldCondition,
     Filter,
+    Fusion,
+    FusionQuery,
     MatchValue,
     PointStruct,
+    Prefetch,
     Range,
+    SparseVector,
 )
 
 from src.services.vector.base import BaseVectorStore, SearchResult
@@ -24,19 +28,78 @@ class QdrantStore(BaseVectorStore):
         self.client = AsyncQdrantClient(url=url, api_key=api_key or None)
 
     async def upsert(self, collection: str, points: list[dict[str, Any]]) -> None:
-        qdrant_points = [
-            PointStruct(
-                id=p["id"],
-                vector=p["vector"],
-                payload=p.get("payload", {}),
+        """Upsert points into a collection.
+
+        Accepts two point formats:
+        - Dense only: {"id": str, "vector": list[float], "payload": dict}
+        - Named vectors: {"id": str, "vector": {"dense": list[float], "sparse": {"indices": [...], "values": [...]}}, "payload": dict}
+        """
+        qdrant_points: list[PointStruct] = []
+        for p in points:
+            vec = p["vector"]
+            if isinstance(vec, dict):
+                vector_field: Any = {
+                    name: SparseVector(indices=v["indices"], values=v["values"])
+                    if isinstance(v, dict)
+                    else v
+                    for name, v in vec.items()
+                }
+            else:
+                vector_field = vec
+            qdrant_points.append(
+                PointStruct(id=p["id"], vector=vector_field, payload=p.get("payload", {}))
             )
-            for p in points
-        ]
 
         async def _call() -> None:
             await self.client.upsert(collection_name=collection, points=qdrant_points, wait=True)
 
         await fetch_with_retry(lambda: qdrant_breaker.call_async(_call), label="qdrant.upsert")
+
+    async def hybrid_search(
+        self,
+        collection: str,
+        dense_vector: list[float],
+        sparse_indices: list[int],
+        sparse_values: list[float],
+        limit: int = 20,
+        filters: dict[str, Any] | None = None,
+    ) -> list[SearchResult]:
+        """Dense + sparse hybrid search fused with RRF inside Qdrant.
+
+        Both prefetch arms apply the same payload filter so multi-tenant isolation
+        is enforced at the database level for both vector types.
+        """
+        qdrant_filter = self._build_filter(filters) if filters else None
+
+        async def _call() -> list[SearchResult]:
+            response = await self.client.query_points(
+                collection_name=collection,
+                prefetch=[
+                    Prefetch(
+                        query=dense_vector,
+                        using="dense",
+                        limit=limit,
+                        filter=qdrant_filter,
+                    ),
+                    Prefetch(
+                        query=SparseVector(indices=sparse_indices, values=sparse_values),
+                        using="sparse",
+                        limit=limit,
+                        filter=qdrant_filter,
+                    ),
+                ],
+                query=FusionQuery(fusion=Fusion.RRF),
+                limit=limit,
+                with_payload=True,
+            )
+            return [
+                SearchResult(id=str(p.id), score=p.score, payload=p.payload or {})
+                for p in response.points
+            ]
+
+        return await fetch_with_retry(
+            lambda: qdrant_breaker.call_async(_call), label="qdrant.hybrid_search"
+        )
 
     async def search(
         self,
@@ -46,6 +109,7 @@ class QdrantStore(BaseVectorStore):
         score_threshold: float | None = None,
         filters: dict[str, Any] | None = None,
     ) -> list[SearchResult]:
+        """Dense-only ANN search. Used for correction_embeddings and session_memory collections."""
         qdrant_filter = self._build_filter(filters) if filters else None
 
         async def _call() -> list[SearchResult]:

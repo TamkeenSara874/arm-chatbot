@@ -26,8 +26,7 @@ class BaseLLMClient(ABC):
         system: str = "",
         max_tokens: int = 1024,
         temperature: float = 0.3,
-    ) -> str:
-        ...
+    ) -> str: ...
 
     @abstractmethod
     async def complete_structured(
@@ -37,8 +36,7 @@ class BaseLLMClient(ABC):
         response_format: type[BaseModelT],
         max_tokens: int = 1024,
         temperature: float = 0.3,
-    ) -> BaseModelT:
-        ...
+    ) -> BaseModelT: ...
 
     @abstractmethod
     async def stream(
@@ -47,8 +45,7 @@ class BaseLLMClient(ABC):
         system: str = "",
         max_tokens: int = 1024,
         temperature: float = 0.3,
-    ) -> AsyncIterator[str]:
-        ...
+    ) -> AsyncIterator[str]: ...
 
 
 class FallbackLLMClient(BaseLLMClient):
@@ -102,7 +99,9 @@ class FallbackLLMClient(BaseLLMClient):
                     method="complete_structured",
                     error=str(exc),
                 )
-        raise AllModelsFailedError("All LLM providers failed for complete_structured()") from last_exc
+        raise AllModelsFailedError(
+            "All LLM providers failed for complete_structured()"
+        ) from last_exc
 
     async def stream(
         self,
