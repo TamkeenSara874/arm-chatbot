@@ -4,12 +4,54 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.core.reranker import _sigmoid, rerank
+from src.core.reranker import _load_cross_encoder, _sigmoid, load_reranker, rerank
 from src.services.vector.base import SearchResult
 
 
 def _sr(chunk_id: str, score: float, text: str = "generic review text") -> SearchResult:
     return SearchResult(id=chunk_id, score=score, payload={"text": text})
+
+
+class TestLoadCrossEncoder:
+    def test_returns_cross_encoder_instance(self) -> None:
+        mock_ce_cls = MagicMock()
+        mock_instance = MagicMock()
+        mock_ce_cls.return_value = mock_instance
+
+        with patch.dict("sys.modules", {"sentence_transformers": MagicMock(CrossEncoder=mock_ce_cls)}):
+            result = _load_cross_encoder("BAAI/bge-reranker-base")
+
+        mock_ce_cls.assert_called_once_with("BAAI/bge-reranker-base")
+        assert result is mock_instance
+
+
+class TestLoadReranker:
+    @pytest.mark.asyncio
+    async def test_first_call_loads_and_caches_model(self) -> None:
+        import src.core.reranker as reranker_module
+
+        reranker_module._model_cache.clear()
+
+        mock_model = MagicMock()
+
+        with patch("src.core.reranker._load_cross_encoder", return_value=mock_model):
+            result = await load_reranker("test-model-unique")
+
+        assert result is mock_model
+        assert reranker_module._model_cache.get("test-model-unique") is mock_model
+
+    @pytest.mark.asyncio
+    async def test_second_call_returns_cached_model(self) -> None:
+        import src.core.reranker as reranker_module
+
+        mock_model = MagicMock()
+        reranker_module._model_cache["cached-model"] = mock_model
+
+        with patch("src.core.reranker._load_cross_encoder") as mock_load:
+            result = await load_reranker("cached-model")
+            mock_load.assert_not_called()
+
+        assert result is mock_model
 
 
 class TestSigmoid:

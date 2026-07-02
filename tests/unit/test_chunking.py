@@ -1,6 +1,8 @@
 """Unit tests for adaptive text chunking."""
 
-from src.core.chunking import chunk_text
+from unittest.mock import patch
+
+from src.core.chunking import _sentence_split, chunk_text
 from src.utils.token_budget import estimate_tokens
 
 
@@ -64,3 +66,33 @@ def test_single_very_long_sentence() -> None:
     chunks = chunk_text(long_sentence, chunk_size=100)
     assert len(chunks) >= 1
     assert all(c.strip() for c in chunks)
+
+
+class TestSentenceSplit:
+    def test_nltk_lookup_error_falls_back_to_regex(self) -> None:
+        text = "Good food. Slow service! Worth the wait?"
+        with patch("nltk.sent_tokenize", side_effect=LookupError("punkt missing")):
+            parts = _sentence_split(text)
+        assert len(parts) >= 2
+        assert any("Good food" in p for p in parts)
+
+    def test_nltk_generic_exception_falls_back_to_regex(self) -> None:
+        text = "Amazing pasta. Would visit again."
+        with patch("nltk.sent_tokenize", side_effect=RuntimeError("NLTK error")):
+            parts = _sentence_split(text)
+        assert len(parts) >= 1
+
+    def test_regex_fallback_filters_empty_parts(self) -> None:
+        text = "One sentence.   Another sentence."
+        with patch("nltk.sent_tokenize", side_effect=LookupError("punkt missing")):
+            parts = _sentence_split(text)
+        for part in parts:
+            assert part.strip(), "Empty part returned by regex fallback"
+
+
+def test_long_text_falls_back_to_original_when_no_sentences() -> None:
+    long_text = "x" * 2000
+    with patch("src.core.chunking._sentence_split", return_value=[]):
+        chunks = chunk_text(long_text, chunk_size=100)
+    assert len(chunks) == 1
+    assert chunks[0] == long_text
