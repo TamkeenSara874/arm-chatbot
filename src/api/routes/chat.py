@@ -22,6 +22,7 @@ from sse_starlette.sse import EventSourceResponse
 from src.api.dependencies import (
     AuthToken,
     DbSession,
+    RestaurantId,
     get_cache,
     get_complex_client,
     get_decomp_client,
@@ -85,18 +86,18 @@ OpenAI = Annotated[AsyncOpenAI, Depends(get_openai_client)]
 @router.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 async def create_session(
     body: SessionCreateRequest,
-    _: AuthToken,
+    restaurant_id: RestaurantId,
     db: DbSession,
 ) -> SessionResponse:
     session = ChatSession(
-        restaurant_id=body.restaurant_id,
+        restaurant_id=restaurant_id,
         user_identifier=body.user_identifier,
     )
     db.add(session)
     await db.commit()
     await db.refresh(session)
     active_sessions_gauge.inc()
-    logger.info("session_created", session_id=str(session.id), restaurant_id=body.restaurant_id)
+    logger.info("session_created", session_id=str(session.id), restaurant_id=restaurant_id)
     return SessionResponse(session_id=session.id, restaurant_id=session.restaurant_id)
 
 
@@ -105,7 +106,7 @@ async def create_session(
 async def chat_query(
     request: Request,
     body: ChatQueryRequest,
-    _: AuthToken,
+    restaurant_id: RestaurantId,
     db: DbSession,
     decomp_client: DecompClient,
     simple_client: SimpleClient,
@@ -117,13 +118,13 @@ async def chat_query(
 ) -> EventSourceResponse:
     trace = RequestTrace(
         session_id=str(body.session_id),
-        restaurant_id=body.restaurant_id,
+        restaurant_id=restaurant_id,
     )
 
     sanitized = sanitize_input(body.message)
 
     # Cache check before any LLM work
-    cached_data = await cache.get(body.restaurant_id, sanitized)
+    cached_data = await cache.get(restaurant_id, sanitized)
     if cached_data:
         trace.cache_hit = True
         trace.emit()
@@ -154,18 +155,21 @@ async def chat_query(
             evidence=[],
             confidence=1.0,
         )
-        return EventSourceResponse(_yield_instant(response, body.session_id, uuid.uuid4()))
+        return EventSourceResponse(
+            _yield_instant(response, body.session_id, uuid.uuid4(), model_used="guardrail")
+        )
 
     # count_query fast path — direct Postgres COUNT(*), no LLM generation
     if decomposed.intent == "count_query":
         count_answer, count_msg_id = await _handle_count_query(
-            db, body, decomposed, sanitized, trace
+            db, body, restaurant_id, decomposed, sanitized, trace
         )
         return EventSourceResponse(
             _yield_instant(
                 ChatResponseSchema(answer=count_answer, evidence=[], confidence=1.0),
                 body.session_id,
                 count_msg_id,
+                model_used="direct_query",
             )
         )
 
@@ -173,6 +177,7 @@ async def chat_query(
     return EventSourceResponse(
         _pipeline_stream(
             body=body,
+            restaurant_id=restaurant_id,
             sanitized=sanitized,
             query_vector=query_vector,
             decomposed=decomposed,
@@ -193,7 +198,7 @@ async def chat_query(
 async def chat_report(
     request: Request,
     body: ReportRequest,
-    _: AuthToken,
+    restaurant_id: RestaurantId,
     db: DbSession,
     vector_store: VectorStore,
     openai_client: OpenAI,
@@ -201,7 +206,7 @@ async def chat_report(
     settings_ = get_settings()
     report = await generate_report(
         user_message=body.message,
-        restaurant_id=body.restaurant_id,
+        restaurant_id=restaurant_id,
         db_session=db,
         vector_store=vector_store,
         qdrant_reviews_collection=settings_.qdrant_collection_reviews,
@@ -212,10 +217,10 @@ async def chat_report(
     )
     logger.info(
         "report_generated",
-        restaurant_id=body.restaurant_id,
+        restaurant_id=restaurant_id,
         session_id=str(body.session_id),
     )
-    return ReportResponse(restaurant_id=body.restaurant_id, report=report, model_used=settings_.openai_simple_model)
+    return ReportResponse(restaurant_id=restaurant_id, report=report, model_used=settings_.openai_simple_model)
 
 
 @router.get("/sessions/{session_id}/history", response_model=list[MessageResponse])
@@ -304,6 +309,7 @@ async def submit_correction(
 async def _handle_count_query(
     db: AsyncSession,
     body: ChatQueryRequest,
+    restaurant_id: int,
     decomposed,
     sanitized: str,
     trace: RequestTrace,
@@ -314,7 +320,7 @@ async def _handle_count_query(
         select(func.count())
         .select_from(ReviewChunkMeta)
         .where(ReviewChunkMeta.chunk_index == 0)
-        .where(ReviewChunkMeta.restaurant_id == body.restaurant_id)
+        .where(ReviewChunkMeta.restaurant_id == restaurant_id)
     )
 
     if decomposed.sentiment_filter:
@@ -358,6 +364,7 @@ async def _handle_count_query(
 
 async def _pipeline_stream(
     body: ChatQueryRequest,
+    restaurant_id: int,
     sanitized: str,
     query_vector: list[float],
     decomposed,
@@ -406,7 +413,7 @@ async def _pipeline_stream(
         t0 = time.perf_counter()
         results = await hybrid_retrieve(
             query=sanitized,
-            restaurant_id=body.restaurant_id,
+            restaurant_id=restaurant_id,
             embedder=embedder,
             vector_store=vector_store,
             collection=settings_.qdrant_collection_reviews,
@@ -432,7 +439,7 @@ async def _pipeline_stream(
         # Correction lookup
         correction_text = await find_correction(
             query=sanitized,
-            restaurant_id=body.restaurant_id,
+            restaurant_id=restaurant_id,
             intent=decomposed.intent,
             embedder=embedder,
             vector_store=vector_store,
@@ -506,6 +513,13 @@ async def _pipeline_stream(
         structured = validate_llm_output(structured)
         trace.confidence = structured.confidence
 
+        # Rough cost estimate from character counts (no token stream in SSE mode)
+        from src.utils.cost_tracker import estimate_cost
+
+        prompt_est = max(1, (len(evidence_block) + len(gen_system)) // 4)
+        completion_est = max(1, len(full_answer) // 4)
+        trace.cost_usd = estimate_cost(model_used, prompt_est, completion_est)
+
         final_payload = {
             "message_id": str(message_id),
             "session_id": str(body.session_id),
@@ -513,6 +527,8 @@ async def _pipeline_stream(
             "cached": False,
             "complexity": decomposed.complexity,
             "model_used": model_used,
+            "latency_ms": round(trace.total_ms),
+            "cost_usd": round(trace.cost_usd, 6),
         }
         yield {"event": "done", "data": json.dumps(final_payload)}
 
@@ -530,7 +546,7 @@ async def _pipeline_stream(
                 embedder=embedder,
                 vector_store=vector_store,
                 cache=cache,
-                restaurant_id=body.restaurant_id,
+                restaurant_id=restaurant_id,
                 summary_client=summary_client,
                 summary_trigger=settings_.session_summary_trigger,
             ),
@@ -668,6 +684,7 @@ async def _yield_instant(
     response: ChatResponseSchema,
     session_id: uuid.UUID,
     message_id: uuid.UUID,
+    model_used: str = "none",
 ) -> AsyncGenerator[dict, None]:
     """Emit a non-streamed response (guardrail, count_query) as a single 'done' event."""
     payload = {
@@ -676,7 +693,7 @@ async def _yield_instant(
         "response": response.model_dump(),
         "cached": False,
         "complexity": "simple",
-        "model_used": "none",
+        "model_used": model_used,
     }
     yield {"event": "done", "data": json.dumps(payload)}
 

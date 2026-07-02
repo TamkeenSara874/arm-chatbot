@@ -144,3 +144,24 @@ class IngestJob(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IngestManifest(Base):
+    """Tracks the last successfully seeded state of each Qdrant collection.
+
+    The seed script compares both file_hash and pipeline_version against the
+    stored values. A match on both means the collection is current; any
+    mismatch triggers a full re-ingest. Bump PIPELINE_VERSION in
+    ingest_worker.py whenever the embedding model, chunking strategy, or
+    entity extraction prompt changes.
+    """
+
+    __tablename__ = "ingest_manifest"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    collection_name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    file_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    pipeline_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    review_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

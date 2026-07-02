@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import structlog
 
@@ -76,28 +79,37 @@ class RequestTrace:
         if self.cost_usd > 0:
             request_cost_usd.observe(self.cost_usd)
 
-        logger.info(
-            "request_trace",
-            session_id=self.session_id,
-            restaurant_id=self.restaurant_id,
-            intent=self.intent,
-            complexity=self.complexity,
-            decomp_ms=round(self.decomp_ms, 1),
-            retrieval_ms=round(self.retrieval_ms, 1),
-            rerank_ms=round(self.rerank_ms, 1),
-            ranking_ms=round(self.ranking_ms, 1),
-            generation_ms=round(self.generation_ms, 1),
-            total_ms=round(self.total_ms, 1),
-            cache_hit=self.cache_hit,
-            decomp_model=self.decomp_model,
-            generation_model=self.generation_model,
-            prompt_tokens=self.prompt_tokens,
-            completion_tokens=self.completion_tokens,
-            cost_usd=round(self.cost_usd, 6),
-            confidence=round(self.confidence, 3),
-            evidence_count=self.evidence_count,
-            low_evidence=self.low_evidence,
-        )
+        record = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "session_id": self.session_id,
+            "restaurant_id": self.restaurant_id,
+            "intent": self.intent,
+            "complexity": self.complexity,
+            "decomp_ms": round(self.decomp_ms, 1),
+            "retrieval_ms": round(self.retrieval_ms, 1),
+            "rerank_ms": round(self.rerank_ms, 1),
+            "ranking_ms": round(self.ranking_ms, 1),
+            "generation_ms": round(self.generation_ms, 1),
+            "total_ms": round(self.total_ms, 1),
+            "cache_hit": self.cache_hit,
+            "decomp_model": self.decomp_model,
+            "generation_model": self.generation_model,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "cost_usd": round(self.cost_usd, 6),
+            "confidence": round(self.confidence, 3),
+            "evidence_count": self.evidence_count,
+            "low_evidence": self.low_evidence,
+        }
+
+        logger.info("request_trace", **record)
+
+        try:
+            os.makedirs("logs", exist_ok=True)
+            with open("logs/request_traces.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record) + "\n")
+        except OSError:
+            pass
 
 
 @contextmanager

@@ -56,21 +56,21 @@ async def ingest_reviews(
     vector_store: VectorStore,
     cache: Cache,
 ) -> IngestJobResponse:
-    settings_ = get_settings()
-
-    content_type = file.content_type or ""
-    check_file_upload(
-        content_type=content_type,
-        size_bytes=None,
-        max_mb=settings_.ingest_max_file_size_mb,
-    )
-
     file_bytes = await file.read()
-    if len(file_bytes) > settings_.ingest_max_file_size_mb * 1024 * 1024:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File exceeds {settings_.ingest_max_file_size_mb} MB limit",
+
+    try:
+        check_file_upload(
+            filename=file.filename or "upload.json",
+            content_type=file.content_type or "",
+            size_bytes=len(file_bytes),
         )
+    except ValueError as exc:
+        status_code = (
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+            if "too large" in str(exc)
+            else status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+        )
+        raise HTTPException(status_code=status_code, detail=str(exc))
 
     job = IngestJob(
         restaurant_id=restaurant_id,
@@ -94,10 +94,10 @@ async def ingest_reviews(
             job_id=job.id,
             restaurant_id=restaurant_id,
             file_content=file_bytes,
-            settings=settings_,
+            settings=settings,
             embedder=embedder,
             vector_store=vector_store,
-            reviews_collection=settings_.qdrant_collection_reviews,
+            reviews_collection=settings.qdrant_collection_reviews,
             llm_client=llm_client,
             cache=cache,
         ),

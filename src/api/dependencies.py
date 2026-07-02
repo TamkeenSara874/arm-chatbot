@@ -3,6 +3,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,7 +40,46 @@ async def require_api_key(
     return credentials.credentials
 
 
+async def require_restaurant_jwt(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> int:
+    """Validate a restaurant-scoped JWT and return the restaurant_id it encodes.
+
+    The frontend obtains this token via POST /api/v1/auth/token (which requires
+    the static API key). The backend then uses the JWT's restaurant_id for all
+    data access, ignoring any restaurant_id the client sends in the request body.
+    This prevents one restaurant owner from querying another's data.
+    """
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Restaurant token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        payload = jwt.decode(
+            credentials.credentials,
+            settings.jwt_secret,
+            algorithms=[settings.jwt_algorithm],
+        )
+        restaurant_id: int | None = payload.get("restaurant_id")
+        if restaurant_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token missing restaurant_id claim",
+            )
+        return int(restaurant_id)
+    except JWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid or expired token: {exc}",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+
 AuthToken = Annotated[str, Depends(require_api_key)]
+RestaurantId = Annotated[int, Depends(require_restaurant_jwt)]
 
 
 @lru_cache(maxsize=1)

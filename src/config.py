@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     # Evidence quality
     data_staleness_days: int = 365
 
+    # JWT (restaurant-scoped tokens issued after API key auth)
+    jwt_secret: str = "change-me-jwt-secret-32-chars-min"
+    jwt_algorithm: str = "HS256"
+    jwt_expiry_hours: int = 24
+
     @property
     def allowed_origins_list(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]

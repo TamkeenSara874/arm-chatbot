@@ -95,6 +95,8 @@ class ChatQueryResponse(BaseModel):
     cached: bool = False
     complexity: str
     model_used: str
+    latency_ms: int = 0
+    cost_usd: float = 0.0
 
 
 class CorrectionRequest(BaseModel):

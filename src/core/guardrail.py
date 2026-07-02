@@ -9,9 +9,10 @@ GUARDRAIL_RESPONSES: dict[str, str] = {
         "source. Is there anything I can help you with from your customer feedback?"
     ),
     "ui_question": (
-        "I am your restaurant insights assistant and I focus on what your customers are "
-        "saying in their reviews. For questions about the app itself, your support team "
-        "would be the best contact. Can I help you with anything from your reviews?"
+        "I am your restaurant insights assistant — I focus on what your customers are "
+        "saying in their reviews. For questions about navigating or using the AIO platform "
+        "itself, AIO's CareBot assistant can help you directly. Can I help you with "
+        "anything from your reviews?"
     ),
     "manipulation_request": (
         "I am not able to help with writing, removing, or influencing reviews -- that "

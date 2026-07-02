@@ -22,6 +22,10 @@ from src.utils.security import flag_injection
 
 logger = structlog.get_logger()
 
+# Bump this string whenever the embedding model, chunking strategy, or entity
+# extraction prompt changes. The seed script uses it to detect stale vectors.
+PIPELINE_VERSION = "1.0.0"
+
 SENTIMENT_RATING_BUCKETS: dict[str, str] = {
     "positive": "Positive",
     "negative": "Negative",
@@ -146,7 +150,7 @@ async def _run(
             skipped_empty += 1
             ingest_reviews_total.labels(status="skipped_empty").inc()
             meta = ReviewChunkMeta(
-                chunk_id=f"{review_id}_0",
+                chunk_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{review_id}_0")),
                 restaurant_id=restaurant_id,
                 review_id=review_id,
                 chunk_text=None,
@@ -169,7 +173,7 @@ async def _run(
 
         for chunk_idx, chunk in enumerate(chunks):
             has_injection = flag_injection(chunk, restaurant_id)
-            chunk_id = f"{review_id}_{chunk_idx}"
+            chunk_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{review_id}_{chunk_idx}"))
             meta = ReviewChunkMeta(
                 chunk_id=chunk_id,
                 restaurant_id=restaurant_id,
