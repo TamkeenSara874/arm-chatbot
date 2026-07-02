@@ -79,7 +79,7 @@ chat_response_complex:
         default: ""
   models:
     - provider: openai
-      model_name: gpt-4o
+      model_name: gpt-4.1
       additional_parameters:
         temperature: 0.3
         max_tokens: 800

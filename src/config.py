@@ -31,10 +31,14 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
 
     # Model names — change these env vars to switch models, no code edits needed
+    # gpt-4o-mini is the approved simple-query and entity-extraction model
+    # gpt-4.1 replaces gpt-4o for complex queries (same capability tier, allowed by project key)
     openai_simple_model: str = "gpt-4o-mini"
-    openai_complex_model: str = "gpt-4o"
+    openai_complex_model: str = "gpt-4.1"
     openai_embed_model: str = "text-embedding-3-large"
     groq_decomp_model: str = "llama-3.3-70b-versatile"
+    # Cross-encoder reranker (runs locally, no API cost)
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
     # Embeddings
     embedding_dim: int = 3072

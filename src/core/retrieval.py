@@ -104,12 +104,17 @@ async def hybrid_retrieve(
     date_to: float | None = None,
     rating_min: float | None = None,
     rating_max: float | None = None,
+    reranker_model: str | None = None,
 ) -> list[SearchResult]:
     """Hybrid retrieval: dense ANN from Qdrant + BM25, fused via RRF (k=60).
 
     Dense and BM25 searches run concurrently. If Qdrant is unavailable, the system
-    falls back to BM25-only with a WARNING logged. Returns SearchResult objects ordered
-    by RRF score; each result's .score field holds that RRF score.
+    falls back to BM25-only with a WARNING logged.
+
+    When reranker_model is provided, RRF candidates are expanded to top_k * 4 and then
+    a cross-encoder (MiniLM-L-6-v2 by default) reranks them. Scores on the returned
+    SearchResults become sigmoid-normalized cross-encoder scores, which rank_results()
+    uses as the semantic relevance signal in the composite formula.
     """
     filters: dict = {"restaurant_id": restaurant_id}
     if date_from is not None:
@@ -139,6 +144,12 @@ async def hybrid_retrieve(
 
     if not dense_results:
         logger.warning("dense_retrieval_unavailable_using_bm25_only", restaurant_id=restaurant_id)
+
+    if reranker_model:
+        from src.core.reranker import rerank
+
+        rrf_candidates = _fuse_and_rank(dense_results, bm25_results, top_k=top_k * 4, rrf_k=rrf_k)
+        return await rerank(query, rrf_candidates, model_name=reranker_model, top_k=top_k)
 
     return _fuse_and_rank(dense_results, bm25_results, top_k=top_k, rrf_k=rrf_k)
 

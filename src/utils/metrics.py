@@ -63,3 +63,22 @@ report_generated_total = Counter(
     "Insights reports generated via export_insights_report tool call",
     ["restaurant_id"],
 )
+
+pipeline_stage_latency = Histogram(
+    "pipeline_stage_latency_seconds",
+    "Latency per pipeline stage: decomp, retrieval, rerank, ranking, generation",
+    ["stage"],
+    buckets=[0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0],
+)
+
+rerank_latency = Histogram(
+    "rerank_latency_seconds",
+    "Cross-encoder reranking latency for a single candidate batch",
+    buckets=[0.01, 0.05, 0.1, 0.2, 0.5, 1.0],
+)
+
+request_cost_usd = Histogram(
+    "request_cost_usd",
+    "Estimated USD cost per chat request (LLM tokens only)",
+    buckets=[0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1],
+)
