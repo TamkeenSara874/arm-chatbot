@@ -57,3 +57,9 @@ output_validation_failed_total = Counter(
     "output_validation_failed_total",
     "LLM outputs rejected by validate_llm_output()",
 )
+
+report_generated_total = Counter(
+    "report_generated_total",
+    "Insights reports generated via export_insights_report tool call",
+    ["restaurant_id"],
+)

@@ -46,7 +46,9 @@ class Settings(BaseSettings):
 
     # Session
     session_ttl_days: int = 30
-    session_summary_trigger: int = 6
+    session_context_messages: int = 20
+    session_summary_trigger: int = 20
+    session_context_token_budget: int = 6000
 
     # Ingestion
     chunk_size_tokens: int = 256

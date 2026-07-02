@@ -11,6 +11,7 @@ query_decomposition:
     - comparison         : comparing items, staff, or time periods
     - aggregation        : counting, ranking, or summarising across many reviews
     - count_query        : asking for an exact count ("how many positive reviews do I have?", "how many 1-star reviews this month?") -- triggers a direct Postgres COUNT(*), no LLM generation needed
+    - report             : asking for a comprehensive report or summary document ("give me a report", "summarise this month", "export insights") -- triggers structured report generation with DB aggregations and a downloadable markdown output
     - improvement        : asking how to improve (answer from review evidence only; if no evidence, state limitation)
     - factual            : asking a specific fact (e.g., last review date, average rating)
     - out_of_scope       : question has nothing to do with restaurant reviews (weather, current events, general knowledge)

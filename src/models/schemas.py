@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -118,3 +119,35 @@ class IngestJobResponse(BaseModel):
 
 class RestaurantListResponse(BaseModel):
     restaurant_ids: list[int]
+
+
+class ReportRequest(BaseModel):
+    session_id: uuid.UUID
+    restaurant_id: int
+    message: str = Field(..., min_length=1, max_length=2000)
+    date_from: date | None = None
+    date_to: date | None = None
+
+
+class InsightsReport(BaseModel):
+    """Structured output from the export_insights_report tool call."""
+
+    restaurant_id: int
+    generated_at: datetime
+    date_from: date | None
+    date_to: date | None
+    total_reviews: int
+    avg_rating: float | None
+    rating_distribution: dict[str, int]
+    sentiment_breakdown: dict[str, int]
+    source_breakdown: dict[str, int]
+    top_praised: list[tuple[str, int]]
+    top_complained: list[tuple[str, int]]
+    summary: str
+    markdown: str
+
+
+class ReportResponse(BaseModel):
+    restaurant_id: int
+    report: InsightsReport
+    model_used: str
