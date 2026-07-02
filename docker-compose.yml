@@ -1,0 +1,98 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: armchatbot
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d armchatbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.10.0
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    volumes:
+      - qdrant-data:/qdrant/storage
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - pip-cache:/root/.cache/pip
+    environment:
+      APP_ENV: development
+      DEBUG: "true"
+      API_KEY: ${API_KEY:-change-me-local-dev-key}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/armchatbot
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      QDRANT_COLLECTION_REVIEWS: review_chunks
+      QDRANT_COLLECTION_CORRECTIONS: correction_embeddings
+      REDIS_URL: redis://redis:6379/0
+      CACHE_TTL_SECONDS: "3600"
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_SIMPLE_MODEL: ${OPENAI_SIMPLE_MODEL:-gpt-4o-mini}
+      OPENAI_COMPLEX_MODEL: ${OPENAI_COMPLEX_MODEL:-gpt-4o}
+      OPENAI_EMBED_MODEL: ${OPENAI_EMBED_MODEL:-text-embedding-3-large}
+      GROQ_DECOMP_MODEL: ${GROQ_DECOMP_MODEL:-llama-3.3-70b-versatile}
+      ANTHROPIC_FALLBACK_MODEL: ${ANTHROPIC_FALLBACK_MODEL:-claude-sonnet-4-6}
+      EMBEDDING_DIM: "3072"
+      ENTITY_EXTRACTION_BATCH_SIZE: "10"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      bash -c "
+        pip install -e '.[dev]' -q &&
+        python -c 'import nltk; nltk.download(\"punkt_tab\", quiet=True)' &&
+        alembic upgrade head &&
+        uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+volumes:
+  postgres-data:
+  qdrant-data:
+  redis-data:
+  pip-cache:
