@@ -28,14 +28,12 @@ class Settings(BaseSettings):
     # LLM providers
     groq_api_key: str = ""
     openai_api_key: str = ""
-    anthropic_api_key: str = ""
 
-    # Model names — change these env vars to switch GPT-4 <-> GPT-5, no code edits needed
+    # Model names — change these env vars to switch models, no code edits needed
     openai_simple_model: str = "gpt-4o-mini"
     openai_complex_model: str = "gpt-4o"
     openai_embed_model: str = "text-embedding-3-large"
     groq_decomp_model: str = "llama-3.3-70b-versatile"
-    anthropic_fallback_model: str = "claude-sonnet-4-6"
 
     # Embeddings
     embedding_dim: int = 3072

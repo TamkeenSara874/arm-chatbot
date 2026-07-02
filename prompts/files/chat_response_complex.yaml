@@ -67,12 +67,6 @@ chat_response_complex:
         temperature: 0.3
         max_tokens: 800
         use_structured_output: true
-    - provider: anthropic
-      model_name: claude-sonnet-4-6
-      additional_parameters:
-        temperature: 0.3
-        max_tokens: 800
-        use_structured_output: true
     - provider: openai
       model_name: gpt-4o-mini
       additional_parameters:
