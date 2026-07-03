@@ -1,6 +1,12 @@
 """Chat API routes: sessions, query (SSE), history, corrections, and report."""
 
-from __future__ import annotations
+# NOTE: deliberately no `from __future__ import annotations` here. Combined
+# with slowapi's @limiter.limit() decorator, postponed evaluation breaks
+# FastAPI's dependant analysis for every decorated route in this file --
+# it can no longer resolve `body: ChatQueryRequest` / Depends() types, so it
+# silently treats them as required query parameters instead of a JSON body /
+# dependency injection, and every such route 422s on any real request. See
+# the identical fix + repro notes in src/api/routes/ingest.py.
 
 import asyncio
 import json
@@ -20,7 +26,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from src.api.dependencies import (
-    AuthToken,
     DbSession,
     RestaurantId,
     get_cache,
@@ -35,6 +40,7 @@ from src.api.dependencies import (
 from src.config import get_settings
 from src.core.correction import find_correction, store_correction
 from src.core.decomposition import decompose_query
+from src.core.groundedness import check_count_groundedness
 from src.core.guardrail import check_guardrail
 from src.core.ranking import rank_results, reciprocal_rank_fusion
 from src.core.report import generate_report
@@ -128,20 +134,27 @@ async def chat_query(
     if cached_data:
         trace.cache_hit = True
         trace.emit()
-        return EventSourceResponse(_yield_cached(cached_data))
+        return EventSourceResponse(_yield_cached(cached_data, body.session_id))
 
-    # Parallel: query decomposition + dense embedding — saves ~150ms vs sequential
+    # Query decomposition. Embedding is deliberately NOT computed here in
+    # parallel: retrieval must use decomposed.rephrased_query (pronoun
+    # resolution, vague-query expansion), which doesn't exist yet at this
+    # point, and guardrailed/count_query intents never need an embedding at
+    # all -- computing one here would silently waste an API call on every
+    # out-of-scope question. hybrid_retrieve() embeds the right query text
+    # itself once decomposition has run.
     loader = get_prompt_loader()
     decomp_system, decomp_user = loader.format(
         "query_decomposition", query=sanitized, session_context=""
     )
-    t_parallel = time.perf_counter()
-    embed_task = asyncio.create_task(embedder.embed_one(sanitized))
-    decomp_task = asyncio.create_task(
-        decompose_query(decomp_client, decomp_user, decomp_system)
+    t_decomp = time.perf_counter()
+    decomposed = await decompose_query(
+        decomp_client,
+        decomp_user,
+        decomp_system,
+        usage_callback=lambda p, c: trace.record_tokens(settings.groq_decomp_model, p, c),
     )
-    query_vector, decomposed = await asyncio.gather(embed_task, decomp_task)
-    trace.decomp_ms = (time.perf_counter() - t_parallel) * 1000.0
+    trace.decomp_ms = (time.perf_counter() - t_decomp) * 1000.0
     trace.intent = decomposed.intent
     trace.complexity = decomposed.complexity
     trace.decomp_model = settings.groq_decomp_model
@@ -159,19 +172,30 @@ async def chat_query(
             _yield_instant(response, body.session_id, uuid.uuid4(), model_used="guardrail")
         )
 
-    # count_query fast path — direct Postgres COUNT(*), no LLM generation
+    # count_query fast path — direct Postgres COUNT(*), no LLM generation.
+    # A compound question ("how many positive reviews AND how can I
+    # improve?") comes back from decomposition as intent=count_query with a
+    # non-empty sub_queries list for the other half. In that case the pure
+    # fast path would silently drop the second half, so fall through to the
+    # full pipeline instead -- but pass the exact DB-computed count along so
+    # the LLM states it verbatim rather than trying to (mis)count evidence
+    # chunks itself.
+    precomputed_count: str | None = None
     if decomposed.intent == "count_query":
-        count_answer, count_msg_id = await _handle_count_query(
-            db, body, restaurant_id, decomposed, sanitized, trace
-        )
-        return EventSourceResponse(
-            _yield_instant(
-                ChatResponseSchema(answer=count_answer, evidence=[], confidence=1.0),
-                body.session_id,
-                count_msg_id,
-                model_used="direct_query",
+        if not decomposed.sub_queries:
+            count_answer, count_msg_id = await _handle_count_query(
+                db, body, restaurant_id, decomposed, sanitized, trace
             )
-        )
+            return EventSourceResponse(
+                _yield_instant(
+                    ChatResponseSchema(answer=count_answer, evidence=[], confidence=1.0),
+                    body.session_id,
+                    count_msg_id,
+                    model_used="direct_query",
+                )
+            )
+        count = await _compute_count(db, restaurant_id, decomposed)
+        precomputed_count = _format_count_answer(count, decomposed)
 
     # Full pipeline inside the SSE generator
     return EventSourceResponse(
@@ -179,8 +203,8 @@ async def chat_query(
             body=body,
             restaurant_id=restaurant_id,
             sanitized=sanitized,
-            query_vector=query_vector,
             decomposed=decomposed,
+            precomputed_count=precomputed_count,
             db=db,
             simple_client=simple_client,
             complex_client=complex_client,
@@ -220,7 +244,9 @@ async def chat_report(
         restaurant_id=restaurant_id,
         session_id=str(body.session_id),
     )
-    return ReportResponse(restaurant_id=restaurant_id, report=report, model_used=settings_.openai_simple_model)
+    return ReportResponse(
+        restaurant_id=restaurant_id, report=report, model_used=settings_.openai_simple_model
+    )
 
 
 @router.get("/sessions/{session_id}/history", response_model=list[MessageResponse])
@@ -228,11 +254,14 @@ async def chat_report(
 async def get_session_history(
     request: Request,
     session_id: uuid.UUID,
-    _: AuthToken,
+    restaurant_id: RestaurantId,
     db: DbSession,
     limit: int = 20,
     offset: int = 0,
 ) -> list[MessageResponse]:
+    session = await db.get(ChatSession, session_id)
+    if session is None or session.restaurant_id != restaurant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     stmt = (
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
@@ -259,10 +288,12 @@ async def get_session_history(
 async def submit_correction(
     request: Request,
     body: CorrectionRequest,
-    _: AuthToken,
+    restaurant_id: RestaurantId,
     db: DbSession,
     embedder: Embedder,
     vector_store: VectorStore,
+    cache: Cache,
+    decomp_client: DecompClient,
 ) -> CorrectionResponse:
     # Retrieve the original message to get the query text and restaurant_id
     user_msg = await db.get(ChatMessage, body.message_id)
@@ -270,19 +301,40 @@ async def submit_correction(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
 
     session = await db.get(ChatSession, user_msg.session_id)
-    if session is None:
+    if session is None or session.restaurant_id != restaurant_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
-    # Find the assistant response that follows this user message
+    # Find the assistant response that follows this specific user message --
+    # not just the first assistant message ever sent in the session. The
+    # user/assistant pair from one turn are committed in the same transaction
+    # in _post_response_tasks(), so Postgres's func.now() gives them the exact
+    # same created_at; ">=" + ascending + limit 1 finds that pair rather than
+    # an earlier turn's response.
     stmt = (
         select(ChatMessage)
         .where(ChatMessage.session_id == user_msg.session_id)
         .where(ChatMessage.role == "assistant")
+        .where(ChatMessage.created_at >= user_msg.created_at)
         .order_by(ChatMessage.created_at.asc())
+        .limit(1)
     )
     result = await db.execute(stmt)
-    assistant_msgs = result.scalars().all()
-    original_response = assistant_msgs[0].content if assistant_msgs else ""
+    assistant_msg = result.scalar_one_or_none()
+    original_response = assistant_msg.content if assistant_msg else ""
+
+    # Classify the original query the same way the live pipeline would, so
+    # the stored intent actually matches what find_correction() compares
+    # against on a future identical/similar query. A hardcoded "factual" here
+    # made the correction nearly unusable: real queries classify into many
+    # intents (specific_aspect, sentiment_overview, best_item, ...), so
+    # find_correction()'s intent cross-check silently rejected almost every
+    # correction -- confirmed live via the eval harness (correction stored
+    # and embedded correctly, but never surfaced on re-ask).
+    loader = get_prompt_loader()
+    decomp_system, decomp_user = loader.format(
+        "query_decomposition", query=user_msg.content, session_context=""
+    )
+    decomposed = await decompose_query(decomp_client, decomp_user, decomp_system)
 
     correction_id, is_consensus = await store_correction(
         session_id=body.session_id,
@@ -290,12 +342,17 @@ async def submit_correction(
         original_query=user_msg.content,
         original_response=original_response,
         corrected_response=body.corrected_response,
-        intent="factual",
+        intent=decomposed.intent,
         embedder=embedder,
         vector_store=vector_store,
         db_session=db,
         sim_threshold=get_settings().correction_sim_threshold,
     )
+
+    # Bust the cache entry for this exact query text -- otherwise a repeat of
+    # the same question would keep serving the pre-correction cached answer
+    # for the rest of the TTL, silently ignoring the correction just made.
+    await cache.invalidate_query(session.restaurant_id, user_msg.content)
 
     logger.info(
         "correction_stored",
@@ -306,16 +363,12 @@ async def submit_correction(
     return CorrectionResponse(correction_id=correction_id, is_consensus=is_consensus)
 
 
-async def _handle_count_query(
+async def _compute_count(
     db: AsyncSession,
-    body: ChatQueryRequest,
     restaurant_id: int,
     decomposed,
-    sanitized: str,
-    trace: RequestTrace,
-) -> tuple[str, uuid.UUID]:
-    t0 = time.perf_counter()
-
+) -> int:
+    """Direct Postgres COUNT(*) honoring sentiment/date/rating filters from decomposition."""
     stmt = (
         select(func.count())
         .select_from(ReviewChunkMeta)
@@ -346,16 +399,31 @@ async def _handle_count_query(
             stmt = stmt.where(ReviewChunkMeta.rating <= decomposed.rating_filter.max)
 
     result = await db.execute(stmt)
-    count = result.scalar_one()
+    return result.scalar_one()
 
-    trace.generation_ms = (time.perf_counter() - t0) * 1000.0
 
+def _format_count_answer(count: int, decomposed) -> str:
     sentiment_part = (
         f" {decomposed.sentiment_filter.lower()}" if decomposed.sentiment_filter else ""
     )
-    answer = f"You have {count}{sentiment_part} review{'s' if count != 1 else ''} in total."
     if count == 0:
-        answer = f"No{sentiment_part} reviews match that filter."
+        return f"No{sentiment_part} reviews match that filter."
+    return f"You have {count}{sentiment_part} review{'s' if count != 1 else ''} in total."
+
+
+async def _handle_count_query(
+    db: AsyncSession,
+    body: ChatQueryRequest,
+    restaurant_id: int,
+    decomposed,
+    sanitized: str,
+    trace: RequestTrace,
+) -> tuple[str, uuid.UUID]:
+    t0 = time.perf_counter()
+    count = await _compute_count(db, restaurant_id, decomposed)
+    trace.generation_ms = (time.perf_counter() - t0) * 1000.0
+
+    answer = _format_count_answer(count, decomposed)
 
     msg_id = uuid.uuid4()
     trace.emit()
@@ -366,7 +434,6 @@ async def _pipeline_stream(
     body: ChatQueryRequest,
     restaurant_id: int,
     sanitized: str,
-    query_vector: list[float],
     decomposed,
     db: AsyncSession,
     simple_client: BaseLLMClient,
@@ -376,13 +443,20 @@ async def _pipeline_stream(
     vector_store: BaseVectorStore,
     cache: RedisCache,
     trace: RequestTrace,
+    precomputed_count: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     settings_ = get_settings()
     message_id = uuid.uuid4()
     full_answer = ""
 
     try:
-        # Retrieval
+        # Retrieval. Use the decomposition's rewritten/expanded query when
+        # available (pronoun resolution, vague-query expansion) instead of
+        # the raw user text -- previously rephrased_query was computed and
+        # discarded, so "what about the pasta?" never actually got resolved
+        # before hitting the vector store.
+        retrieval_query = decomposed.rephrased_query.strip() or sanitized
+
         is_aggregation = decomposed.needs_aggregation
         top_k = 20 if is_aggregation else 6
 
@@ -412,7 +486,7 @@ async def _pipeline_stream(
 
         t0 = time.perf_counter()
         results = await hybrid_retrieve(
-            query=sanitized,
+            query=retrieval_query,
             restaurant_id=restaurant_id,
             embedder=embedder,
             vector_store=vector_store,
@@ -431,94 +505,131 @@ async def _pipeline_stream(
         rrf_scores = reciprocal_rank_fusion([results])
         for r in results:
             r.score = rrf_scores.get(r.id, r.score)
-        ranked = rank_results(results, settings_, top_k=top_k)
+        ranked = rank_results(
+            results,
+            settings_,
+            top_k=top_k,
+            has_explicit_date_filter=bool(decomposed.date_filter),
+        )
         trace.ranking_ms = (time.perf_counter() - t1) * 1000.0
         trace.evidence_count = len(ranked.evidence)
         trace.low_evidence = ranked.low_evidence
 
-        # Correction lookup
-        correction_text = await find_correction(
-            query=sanitized,
-            restaurant_id=restaurant_id,
-            intent=decomposed.intent,
-            embedder=embedder,
-            vector_store=vector_store,
-            threshold=settings_.correction_sim_threshold,
-        )
-
-        # Session context
-        session_context = await build_session_context(
-            session_id=body.session_id,
-            current_query=sanitized,
-            db_session=db,
-            vector_store=vector_store,
-            embedder=embedder,
-            recent_k=settings_.session_recent_messages,
-            relevant_k=settings_.session_relevant_k,
-            token_budget=settings_.session_context_token_budget,
-        )
-
-        # Build prompt
         evidence_block = _format_evidence(ranked.evidence)
-        is_complex = decomposed.complexity == "complex"
-        model_used = settings_.openai_complex_model if is_complex else settings_.openai_simple_model
-        gen_client = complex_client if is_complex else simple_client
+        gen_system = ""
 
-        prompt_name = "chat_response_complex" if is_complex else "chat_response_simple"
-        loader = get_prompt_loader()
-
-        if is_complex:
-            gen_system, gen_user = loader.format(
-                prompt_name,
-                query=sanitized,
-                sub_queries=json.dumps(decomposed.sub_queries),
-                session_context=session_context,
-                corrections=correction_text or "None",
-                entity_counts=json.dumps(ranked.entity_counts),
-                source_breakdown=json.dumps(ranked.source_breakdown),
-                evidence=evidence_block,
+        if not ranked.evidence and not precomputed_count:
+            # Hard hallucination gate: with zero retrieved evidence there is
+            # nothing grounded to answer from. Prompt rule 1 ("never fabricate")
+            # is a soft instruction the model can still ignore under real
+            # traffic, so skip the LLM call entirely rather than trust it --
+            # this also avoids paying for the correction/session-context
+            # embedding calls and the generation call on a query we already
+            # know can't be answered.
+            model_used = "no_evidence_gate"
+            full_answer = (
+                "I couldn't find any reviews matching that. This could mean there's "
+                "no relevant feedback yet, or the filters (date, rating, or keyword) "
+                "are too narrow -- try broadening the question or a different time period."
             )
+            for word in full_answer.split(" "):
+                yield {"event": "token", "data": word + " "}
+            trace.generation_ms = 0.0
+            trace.generation_model = model_used
         else:
-            gen_system, gen_user = loader.format(
-                prompt_name,
+            # Correction lookup
+            correction_text = await find_correction(
                 query=sanitized,
-                session_context=session_context,
-                corrections=correction_text or "None",
-                evidence=evidence_block,
+                restaurant_id=restaurant_id,
+                intent=decomposed.intent,
+                embedder=embedder,
+                vector_store=vector_store,
+                threshold=settings_.correction_sim_threshold,
             )
 
-        # LLM streaming
-        t_gen = time.perf_counter()
-        async for token in gen_client.stream(
-            gen_user,
-            system=gen_system,
-            max_tokens=800 if is_complex else 400,
-            temperature=0.3,
-        ):
-            full_answer += token
-            yield {"event": "token", "data": token}
+            # Session context
+            session_context = await build_session_context(
+                session_id=body.session_id,
+                current_query=sanitized,
+                db_session=db,
+                vector_store=vector_store,
+                embedder=embedder,
+                recent_k=settings_.session_recent_messages,
+                relevant_k=settings_.session_relevant_k,
+                token_budget=settings_.session_context_token_budget,
+            )
 
-        trace.generation_ms = (time.perf_counter() - t_gen) * 1000.0
-        trace.generation_model = model_used
+            # Build prompt. A compound query (generative half + a countable
+            # half) always routes through the complex prompt/template so the
+            # DB-exact count can be stated verbatim instead of the model
+            # trying to (mis)count evidence chunks itself.
+            is_complex = decomposed.complexity == "complex" or bool(precomputed_count)
+            model_used = (
+                settings_.openai_complex_model if is_complex else settings_.openai_simple_model
+            )
+            gen_client = complex_client if is_complex else simple_client
+
+            prompt_name = "chat_response_complex" if is_complex else "chat_response_simple"
+            loader = get_prompt_loader()
+
+            if is_complex:
+                gen_system, gen_user = loader.format(
+                    prompt_name,
+                    query=sanitized,
+                    sub_queries=json.dumps(decomposed.sub_queries),
+                    session_context=session_context,
+                    corrections=correction_text or "None",
+                    entity_counts=json.dumps(ranked.entity_counts),
+                    source_breakdown=json.dumps(ranked.source_breakdown),
+                    recency_spike=str(ranked.recency_spike).lower(),
+                    evidence=evidence_block,
+                    exact_count=precomputed_count or "None",
+                )
+            else:
+                gen_system, gen_user = loader.format(
+                    prompt_name,
+                    query=sanitized,
+                    session_context=session_context,
+                    corrections=correction_text or "None",
+                    evidence=evidence_block,
+                )
+
+            # LLM streaming
+            t_gen = time.perf_counter()
+            async for token in gen_client.stream(
+                gen_user,
+                system=gen_system,
+                max_tokens=800 if is_complex else 400,
+                temperature=0.3,
+                usage_callback=lambda p, c: trace.record_tokens(model_used, p, c),
+            ):
+                full_answer += token
+                yield {"event": "token", "data": token}
+
+            trace.generation_ms = (time.perf_counter() - t_gen) * 1000.0
+            trace.generation_model = model_used
+
+        # Groundedness heuristic: does the answer state a review/mention count
+        # higher than what was actually retrieved? Cheap code-only check (no
+        # extra LLM call) used as the accuracy signal alongside confidence.
+        trace.groundedness_ok = check_count_groundedness(
+            full_answer, len(ranked.evidence), precomputed_count
+        )
 
         # Build structured response for the final event
         structured = ChatResponseSchema(
             answer=full_answer,
             evidence=ranked.evidence,
-            confidence=_estimate_confidence(ranked),
+            confidence=_estimate_confidence(ranked, trace.groundedness_ok),
             caveats=ranked.staleness_caveat,
             entity_counts=ranked.entity_counts,
             source_breakdown=ranked.source_breakdown,
         )
         structured = validate_llm_output(structured)
         trace.confidence = structured.confidence
-
-        # Rough cost estimate from character counts (no token stream in SSE mode)
-        from src.utils.cost_tracker import estimate_cost
-
-        prompt_est = max(1, (len(evidence_block) + len(gen_system)) // 4)
-        completion_est = max(1, len(full_answer) // 4)
-        trace.cost_usd = estimate_cost(model_used, prompt_est, completion_est)
+        # trace.cost_usd is already accumulated from real provider-reported
+        # token usage via trace.record_tokens() (decomposition + generation
+        # usage_callback hooks above) -- no separate estimate needed here.
 
         final_payload = {
             "message_id": str(message_id),
@@ -541,8 +652,8 @@ async def _pipeline_stream(
                 full_answer=full_answer,
                 structured=structured,
                 model_used=model_used,
+                complexity=decomposed.complexity,
                 chunk_ids=[r.id for r in results[: len(ranked.evidence)]],
-                db=db,
                 embedder=embedder,
                 vector_store=vector_store,
                 cache=cache,
@@ -565,9 +676,7 @@ async def _pipeline_stream(
             "data": json.dumps(
                 {
                     "error": "service_unavailable",
-                    "message": (
-                        "I am temporarily unable to answer. Please try again in a moment."
-                    ),
+                    "message": ("I am temporarily unable to answer. Please try again in a moment."),
                 }
             ),
         }
@@ -582,8 +691,8 @@ async def _post_response_tasks(
     full_answer: str,
     structured: ChatResponseSchema,
     model_used: str,
+    complexity: str,
     chunk_ids: list[str],
-    db: AsyncSession,
     embedder: BaseEmbedder,
     vector_store: BaseVectorStore,
     cache: RedisCache,
@@ -593,73 +702,91 @@ async def _post_response_tasks(
 ) -> None:
     """Persist messages, update session memory, write cache.
 
-    Runs as a fire-and-forget task so it never delays the SSE response.
+    Runs as a fire-and-forget task (asyncio.create_task, not awaited) so it
+    never delays the SSE response -- which means it must NOT reuse the
+    request-scoped `db` session from Depends(get_db): FastAPI tears that
+    session down as soon as the route handler returns, and this task keeps
+    running after that, racing the teardown (confirmed live: intermittent
+    "This transaction is closed" / IllegalStateChangeError, which silently
+    dropped message persistence, session memory, and cache writes whenever
+    it lost the race). Opens its own independent session instead, same
+    pattern src/workers/ingest_worker.py already uses for the same reason.
     """
+    from src.services.database import get_session_factory
+
+    session_factory = get_session_factory()
     try:
-        # Save user message
-        user_msg = ChatMessage(
-            id=message_id,
-            session_id=session_id,
-            role="user",
-            content=sanitized,
-        )
-        db.add(user_msg)
+        async with session_factory() as db:
+            # Save user message
+            user_msg = ChatMessage(
+                id=message_id,
+                session_id=session_id,
+                role="user",
+                content=sanitized,
+            )
+            db.add(user_msg)
 
-        # Save assistant message
-        asst_msg = ChatMessage(
-            session_id=session_id,
-            role="assistant",
-            content=full_answer,
-            retrieved_chunk_ids=chunk_ids,
-            confidence=structured.confidence,
-            model_used=model_used,
-        )
-        db.add(asst_msg)
-        await db.commit()
-
-        # Update session last_activity
-        session_row = await db.get(ChatSession, session_id)
-        if session_row:
-            from datetime import UTC, datetime
-
-            session_row.last_activity_at = datetime.now(tz=UTC)
+            # Save assistant message
+            asst_msg = ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=full_answer,
+                retrieved_chunk_ids=chunk_ids,
+                confidence=structured.confidence,
+                model_used=model_used,
+            )
+            db.add(asst_msg)
             await db.commit()
 
-        # Store user turn in Qdrant session memory
-        await store_session_turn(
-            session_id=session_id,
-            role="user",
-            content=sanitized,
-            embedder=embedder,
-            vector_store=vector_store,
-        )
+            # Update session last_activity
+            session_row = await db.get(ChatSession, session_id)
+            if session_row:
+                from datetime import UTC, datetime
 
-        # Maybe trigger rolling summary
-        await maybe_trigger_summary(
-            session_id=session_id,
-            db_session=db,
-            llm_client=summary_client,
-            summary_trigger=summary_trigger,
-        )
+                session_row.last_activity_at = datetime.now(tz=UTC)
+                await db.commit()
 
-        # Cache write
-        await cache.set(
-            restaurant_id,
-            sanitized,
-            {
-                "answer": full_answer,
-                "evidence": [e.model_dump() for e in structured.evidence],
-                "confidence": structured.confidence,
-                "caveats": structured.caveats,
-                "entity_counts": structured.entity_counts,
-                "source_breakdown": structured.source_breakdown,
-            },
-        )
+            # Store user turn in Qdrant session memory
+            await store_session_turn(
+                session_id=session_id,
+                role="user",
+                content=sanitized,
+                embedder=embedder,
+                vector_store=vector_store,
+            )
+
+            # Maybe trigger rolling summary
+            await maybe_trigger_summary(
+                session_id=session_id,
+                db_session=db,
+                llm_client=summary_client,
+                summary_trigger=summary_trigger,
+            )
+
+            # Cache write. Includes complexity/model_used so a future cache
+            # hit can report what actually generated this answer instead of
+            # a hardcoded guess -- previously every cache hit claimed
+            # complexity="simple" even if a "complex" gpt-4.1 call produced
+            # it, which is misleading for cost/observability.
+            await cache.set(
+                restaurant_id,
+                sanitized,
+                {
+                    "answer": full_answer,
+                    "evidence": [e.model_dump() for e in structured.evidence],
+                    "confidence": structured.confidence,
+                    "caveats": structured.caveats,
+                    "entity_counts": structured.entity_counts,
+                    "source_breakdown": structured.source_breakdown,
+                    "complexity": complexity,
+                    "model_used": model_used,
+                },
+            )
     except Exception as exc:
         logger.warning("post_response_tasks_failed", error=str(exc))
 
 
-async def _yield_cached(data: dict) -> AsyncGenerator[dict, None]:
+async def _yield_cached(data: dict, session_id: uuid.UUID) -> AsyncGenerator[dict, None]:
     """Emit a cached response as a single 'done' SSE event."""
     response = ChatResponseSchema(
         answer=data.get("answer", ""),
@@ -671,10 +798,13 @@ async def _yield_cached(data: dict) -> AsyncGenerator[dict, None]:
     )
     payload = {
         "message_id": str(uuid.uuid4()),
-        "session_id": "",
+        "session_id": str(session_id),
         "response": response.model_dump(),
         "cached": True,
-        "complexity": "simple",
+        # Reflects whatever actually generated this answer (stored alongside
+        # it in cache.set()) rather than a hardcoded guess -- a cache hit of
+        # a "complex" gpt-4.1 call previously always misreported "simple".
+        "complexity": data.get("complexity", "simple"),
         "model_used": "cache",
     }
     yield {"event": "done", "data": json.dumps(payload)}
@@ -719,12 +849,30 @@ def _format_evidence(evidence: list[EvidenceItem]) -> str:
     return "\n\n".join(lines) if lines else "No review evidence found."
 
 
-def _estimate_confidence(ranked) -> float:
+def _estimate_confidence(ranked, groundedness_ok: bool = True) -> float:
     if ranked.low_evidence:
-        return 0.4
-    if ranked.staleness_caveat:
-        return 0.6
-    if ranked.evidence:
+        base = 0.4
+    elif ranked.staleness_caveat:
+        base = 0.6
+    elif ranked.evidence:
         avg_relevance = sum(e.relevance for e in ranked.evidence) / len(ranked.evidence)
-        return min(0.95, 0.5 + avg_relevance * 0.5)
-    return 0.5
+        base = min(0.95, 0.5 + avg_relevance * 0.5)
+    else:
+        base = 0.5
+
+    # Discount confidence when top evidence has unresolved rating/text
+    # sentiment conflicts -- a rating/text disagreement means the raw
+    # signal quality is lower even if retrieval relevance scored well.
+    if ranked.evidence:
+        conflict_ratio = sum(1 for e in ranked.evidence if e.sentiment_conflict) / len(
+            ranked.evidence
+        )
+        base *= 1 - 0.4 * conflict_ratio
+
+    # Heavier discount when the groundedness heuristic caught a likely
+    # fabricated count -- this is a stronger accuracy signal than relevance
+    # scores alone, since it means the answer text itself looks unsupported.
+    if not groundedness_ok:
+        base *= 0.5
+
+    return round(base, 3)

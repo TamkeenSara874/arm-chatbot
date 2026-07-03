@@ -100,6 +100,11 @@ async def store_correction(
                 "corrected_response": corrected_response,
                 "correction_count": new_count,
                 "is_consensus": is_consensus,
+                # Refresh intent too -- otherwise a point created before the
+                # caller started passing the real classified intent (e.g. an
+                # old hardcoded placeholder) would keep failing
+                # find_correction()'s intent cross-check forever.
+                "intent": intent,
             },
         )
         correction_id = uuid.UUID(best.id)

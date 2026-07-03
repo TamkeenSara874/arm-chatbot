@@ -156,47 +156,54 @@ async def maybe_trigger_summary(
         return
 
     asyncio.create_task(
-        _generate_and_save_summary(session_id, db_session, llm_client),
+        _generate_and_save_summary(session_id, llm_client),
         name=f"session-summary-{session_id}",
     )
 
 
 async def _generate_and_save_summary(
     session_id: uuid.UUID,
-    db_session: AsyncSession,
     llm_client: BaseLLMClient,
 ) -> None:
+    # Fire-and-forget (asyncio.create_task, not awaited): must not reuse the
+    # caller's db_session. That session belongs to a request that may finish
+    # and get torn down by FastAPI's Depends(get_db) cleanup before this task
+    # completes -- same "This transaction is closed" race already found and
+    # fixed in chat.py's _post_response_tasks. Opens its own session instead.
+    from src.services.database import get_session_factory
+
     try:
-        stmt = (
-            select(ChatMessage)
-            .where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at)
-        )
-        result = await db_session.execute(stmt)
-        messages = result.scalars().all()
+        async with get_session_factory()() as db_session:
+            stmt = (
+                select(ChatMessage)
+                .where(ChatMessage.session_id == session_id)
+                .order_by(ChatMessage.created_at)
+            )
+            result = await db_session.execute(stmt)
+            messages = result.scalars().all()
 
-        conversation = "\n".join(
-            f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}" for m in messages
-        )
+            conversation = "\n".join(
+                f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}" for m in messages
+            )
 
-        summary = await llm_client.complete(
-            prompt=(
-                f"Conversation to summarize:\n{conversation}\n\n"
-                "Output a 2-3 sentence summary only. No preamble."
-            ),
-            system=(
-                "You are a conversation summarizer. Produce a dense, factual summary "
-                "in 2-3 sentences. Preserve all specific facts mentioned. Never editorialize."
-            ),
-            max_tokens=200,
-            temperature=0.2,
-        )
+            summary = await llm_client.complete(
+                prompt=(
+                    f"Conversation to summarize:\n{conversation}\n\n"
+                    "Output a 2-3 sentence summary only. No preamble."
+                ),
+                system=(
+                    "You are a conversation summarizer. Produce a dense, factual summary "
+                    "in 2-3 sentences. Preserve all specific facts mentioned. Never editorialize."
+                ),
+                max_tokens=200,
+                temperature=0.2,
+            )
 
-        session_row = await db_session.get(ChatSession, session_id)
-        if session_row:
-            session_row.summary = summary
-            await db_session.commit()
-            logger.info("session_summary_saved", session_id=str(session_id))
+            session_row = await db_session.get(ChatSession, session_id)
+            if session_row:
+                session_row.summary = summary
+                await db_session.commit()
+                logger.info("session_summary_saved", session_id=str(session_id))
     except Exception as exc:
         logger.warning(
             "session_summary_failed",

@@ -45,6 +45,22 @@ class RedisCache:
         except Exception as exc:
             logger.warning("cache_set_failed", key=key, error=str(exc))
 
+    async def invalidate_query(self, restaurant_id: int, query: str) -> bool:
+        """Delete the cached response for one exact query, if present.
+
+        Called after a correction is submitted for that query -- otherwise a
+        cache hit on the identical query text would keep serving the
+        pre-correction answer for the rest of the TTL, silently ignoring the
+        correction the user just made.
+        """
+        key = self._key(restaurant_id, query)
+        try:
+            deleted = await self.client.delete(key)
+            return bool(deleted)
+        except Exception as exc:
+            logger.warning("cache_invalidate_query_failed", key=key, error=str(exc))
+            return False
+
     async def invalidate_restaurant(self, restaurant_id: int) -> int:
         """Delete all cached responses for a restaurant. Returns the number of keys deleted."""
         pattern = f"chat:response:{restaurant_id}:*"

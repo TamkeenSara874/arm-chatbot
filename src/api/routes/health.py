@@ -55,7 +55,12 @@ async def readiness(db: DbSession) -> JSONResponse:
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key or None,
         )
-        await qdrant.health_check()
+        # AsyncQdrantClient has no health_check() method in the installed
+        # qdrant-client version (confirmed via direct test -- raises
+        # AttributeError, which the broad except below was silently
+        # swallowing as "unreachable" even with Qdrant fully healthy).
+        # get_collections() is a real, lightweight connectivity check.
+        await qdrant.get_collections()
         await qdrant.close()
         checks["qdrant"] = "ok"
     except Exception as exc:

@@ -1,6 +1,12 @@
 """Ingest and restaurant discovery routes."""
 
-from __future__ import annotations
+# NOTE: deliberately no `from __future__ import annotations` here. Combined
+# with slowapi's @limiter.limit() decorator, postponed evaluation leaves the
+# `file: UploadFile` parameter as an unresolved ForwardRef in the wrapped
+# function's namespace, and FastAPI's dependant analysis crashes at import
+# time with "Invalid args for response field! ... ForwardRef('UploadFile')"
+# -- confirmed via isolated repro. This is the only route file with an
+# UploadFile parameter, so it's the only one that needs this left off.
 
 import asyncio
 import uuid
@@ -70,7 +76,7 @@ async def ingest_reviews(
             if "too large" in str(exc)
             else status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
         )
-        raise HTTPException(status_code=status_code, detail=str(exc))
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     job = IngestJob(
         restaurant_id=restaurant_id,
@@ -141,9 +147,7 @@ async def list_restaurants(
     _: AuthToken,
     db: DbSession,
 ) -> RestaurantListResponse:
-    stmt = select(distinct(ReviewChunkMeta.restaurant_id)).order_by(
-        ReviewChunkMeta.restaurant_id
-    )
+    stmt = select(distinct(ReviewChunkMeta.restaurant_id)).order_by(ReviewChunkMeta.restaurant_id)
     result = await db.execute(stmt)
     ids = [row[0] for row in result.all()]
     return RestaurantListResponse(restaurant_ids=ids)

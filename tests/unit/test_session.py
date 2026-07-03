@@ -311,7 +311,20 @@ class TestGenerateAndSaveSummary:
         db.execute = AsyncMock(return_value=execute_result)
         db.get = AsyncMock(return_value=session_row)
         db.commit = AsyncMock()
+        # _generate_and_save_summary opens its own session via
+        # `async with get_session_factory()() as db_session`, not a session
+        # passed in by the caller -- so the mock must behave as an async
+        # context manager whose __aenter__ returns itself.
+        db.__aenter__ = AsyncMock(return_value=db)
+        db.__aexit__ = AsyncMock(return_value=False)
         return db
+
+    def _patch_session_factory(self, db: MagicMock):
+        # get_session_factory is imported locally inside _generate_and_save_summary
+        # (from src.services.database import get_session_factory), so it must be
+        # patched at its defining module, not as an attribute of src.core.session.
+        factory = MagicMock(return_value=db)
+        return patch("src.services.database.get_session_factory", return_value=factory)
 
     @pytest.mark.asyncio
     async def test_saves_summary_to_session_row(self) -> None:
@@ -326,11 +339,11 @@ class TestGenerateAndSaveSummary:
         llm_client = MagicMock()
         llm_client.complete = AsyncMock(return_value="Biryani is the most popular item.")
 
-        await _generate_and_save_summary(
-            session_id=uuid.uuid4(),
-            db_session=db,
-            llm_client=llm_client,
-        )
+        with self._patch_session_factory(db):
+            await _generate_and_save_summary(
+                session_id=uuid.uuid4(),
+                llm_client=llm_client,
+            )
 
         assert session_row.summary == "Biryani is the most popular item."
         db.commit.assert_called_once()
@@ -343,36 +356,28 @@ class TestGenerateAndSaveSummary:
         llm_client = MagicMock()
         llm_client.complete = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
 
-        await _generate_and_save_summary(
-            session_id=uuid.uuid4(),
-            db_session=db,
-            llm_client=llm_client,
-        )
+        with self._patch_session_factory(db):
+            await _generate_and_save_summary(
+                session_id=uuid.uuid4(),
+                llm_client=llm_client,
+            )
 
         db.commit.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_does_not_save_when_session_row_missing(self) -> None:
         messages = [_make_message("user", "Hello")]
-
-        scalars = MagicMock()
-        scalars.all = MagicMock(return_value=messages)
-        execute_result = MagicMock()
-        execute_result.scalars = MagicMock(return_value=scalars)
-
-        db = MagicMock()
-        db.execute = AsyncMock(return_value=execute_result)
+        db = self._make_db_with_messages(messages, session_summary=None)
         db.get = AsyncMock(return_value=None)
-        db.commit = AsyncMock()
 
         llm_client = MagicMock()
         llm_client.complete = AsyncMock(return_value="A summary.")
 
-        await _generate_and_save_summary(
-            session_id=uuid.uuid4(),
-            db_session=db,
-            llm_client=llm_client,
-        )
+        with self._patch_session_factory(db):
+            await _generate_and_save_summary(
+                session_id=uuid.uuid4(),
+                llm_client=llm_client,
+            )
 
         db.commit.assert_not_called()
 
