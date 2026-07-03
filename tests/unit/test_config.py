@@ -29,6 +29,36 @@ def test_model_names_configurable() -> None:
     assert s.openai_complex_model == "gpt-5"
 
 
+def test_groq_api_key_list_combines_primary_and_extra_keys() -> None:
+    s = Settings(
+        database_url="postgresql+asyncpg://x:x@localhost/x",
+        groq_api_key="key1",
+        groq_api_keys="key2, key3 ,key1",
+    )
+    # key1 appears in both groq_api_key and groq_api_keys -- deduplicated, order preserved.
+    assert s.groq_api_key_list == ["key1", "key2", "key3"]
+
+
+def test_groq_api_key_list_empty_when_unset() -> None:
+    # Explicit empty overrides so this doesn't pick up a real GROQ_API_KEY
+    # from a local .env file when running this test outside CI.
+    s = Settings(
+        database_url="postgresql+asyncpg://x:x@localhost/x",
+        groq_api_key="",
+        groq_api_keys="",
+    )
+    assert s.groq_api_key_list == []
+
+
+def test_groq_api_key_list_single_key() -> None:
+    s = Settings(
+        database_url="postgresql+asyncpg://x:x@localhost/x",
+        groq_api_key="only-key",
+        groq_api_keys="",
+    )
+    assert s.groq_api_key_list == ["only-key"]
+
+
 def test_defaults_are_sane() -> None:
     s = Settings(database_url="postgresql+asyncpg://x:x@localhost/x")
     assert s.embedding_dim == 3072
