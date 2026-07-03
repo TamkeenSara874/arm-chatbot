@@ -11,7 +11,15 @@ GUARDRAIL_RESPONSES: dict[str, str] = {
     "ui_question": (
         "I am your restaurant insights assistant, focused on what your customers are "
         "saying in their reviews. For questions about navigating or using the app itself, "
-        "please reach out to AIO's support team. Can I help you with anything from your reviews?"
+        "AIO's CareBot assistant can help you directly -- try asking CareBot. Can I help "
+        "you with anything from your reviews?"
+    ),
+    "report_howto": (
+        "You can generate a full insights report from the 'Report' button in the top "
+        "navigation bar -- it puts together ratings, sentiment, and top praised/complained "
+        "items into one document. Once it's generated, use the 'Download PDF' button at the "
+        "top of the report to save it. Is there anything from your reviews I can help with "
+        "in the meantime?"
     ),
     "manipulation_request": (
         "I am not able to help with writing, removing, or influencing reviews -- that "

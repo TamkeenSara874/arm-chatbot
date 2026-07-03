@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>ARM Review RAG Chatbot — System Architecture</title>
+<style>
+  :root {
+    --fe-accent:   #4338CA; --fe-fill:   #EEF2FF;
+    --api-accent:  #7C3AED; --api-fill:  #F5F3FF;
+    --pipe-accent: #0F766E; --pipe-fill: #ECFDF5;
+    --iw-accent:   #B45309; --iw-fill:   #FFFBEB;
+    --store-accent:#334155; --store-fill:#F1F5F9;
+    --llm-accent:  #BE123C; --llm-fill:  #FFF1F3;
+    --dec-accent:  #CA8A04; --dec-fill:  #FEF9C3;
+    --seed-accent: #0369A1; --seed-fill: #F0F9FF;
+    --ink: #0F172A;
+    --sub: #475569;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 36px 24px 72px;
+    background: #FAFAF9;
+    font-family: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+    color: var(--ink);
+  }
+
+  header.page-head {
+    max-width: 1300px;
+    margin: 0 auto 26px;
+  }
+
+  header.page-head h1 {
+    font-size: 30px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    margin: 0 0 8px;
+  }
+
+  header.page-head p {
+    font-size: 15.5px;
+    color: var(--sub);
+    margin: 0;
+    line-height: 1.55;
+  }
+
+  /* ---- Legend ---- */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    max-width: 1300px;
+    margin: 22px auto 30px;
+  }
+
+  .legend .chip {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    background: #fff;
+    border: 1px solid #E2E8F0;
+  }
+
+  .legend .swatch {
+    width: 13px;
+    height: 13px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  .legend .fe-label    { color: var(--fe-accent); }
+  .legend .api-label   { color: var(--api-accent); }
+  .legend .pipe-label  { color: var(--pipe-accent); }
+  .legend .iw-label    { color: var(--iw-accent); }
+  .legend .store-label { color: var(--store-accent); }
+  .legend .llm-label   { color: var(--llm-accent); }
+  .legend .dec-label   { color: var(--dec-accent); }
+  .legend .seed-label  { color: var(--seed-accent); }
+
+  .legend .fe .swatch    { background: var(--fe-accent); }
+  .legend .api .swatch   { background: var(--api-accent); }
+  .legend .pipe .swatch  { background: var(--pipe-accent); }
+  .legend .iw .swatch    { background: var(--iw-accent); }
+  .legend .store .swatch { background: var(--store-accent); }
+  .legend .llm .swatch   { background: var(--llm-accent); }
+  .legend .dec .swatch   { background: var(--dec-accent); }
+  .legend .seed .swatch  { background: var(--seed-accent); }
+
+  /* ---- Diagram container ---- */
+  .diagram-shell {
+    max-width: 100%;
+    margin: 0 auto;
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 16px;
+    padding: 28px;
+    overflow: auto;
+  }
+
+  /* ---- Node label typography ---- */
+  .nb {
+    display: inline-block;
+    text-align: left;
+    line-height: 1.5;
+    padding: 7px 11px;
+  }
+
+  .t {
+    font-weight: 700;
+    font-size: 18px;
+    display: block;
+    margin-bottom: 3px;
+  }
+
+  .d {
+    font-weight: 500;
+    font-size: 14px;
+    display: block;
+    color: var(--sub);
+  }
+
+  .fe-t   { color: var(--fe-accent); }
+  .api-t  { color: var(--api-accent); }
+  .pipe-t { color: var(--pipe-accent); }
+  .iw-t   { color: var(--iw-accent); }
+  .store-t{ color: var(--store-accent); }
+  .llm-t  { color: var(--llm-accent); }
+  .seed-t { color: var(--seed-accent); }
+  .dec-t  { color: var(--dec-accent); font-size: 17px; }
+
+  .mermaid .cluster-label span,
+  .mermaid .cluster-label div,
+  .mermaid .cluster-label foreignObject div {
+    font-weight: 800 !important;
+    font-size: 20px !important;
+  }
+
+  .mermaid .edgeLabel span,
+  .mermaid .edgeLabel div {
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    color: #475569 !important;
+  }
+
+  footer.note {
+    max-width: 1300px;
+    margin: 26px auto 0;
+    font-size: 13.5px;
+    color: var(--sub);
+    line-height: 1.65;
+  }
+</style>
+</head>
+<body>
+
+<header class="page-head">
+  <h1>ARM Review RAG Chatbot — System Architecture</h1>
+  <p>Single connected view. Colors indicate subsystem membership; solid arrows are control flow, dashed arrows are data reads/writes and provider calls. This revision: adds the frontend as a docker-compose service (not gated on seed/backend readiness), corrects hybrid retrieval to reflect Qdrant-native sparse vectors (BM25 is no longer a separate in-process index, so a Qdrant outage now degrades both dense and sparse together), reflects real per-request token-based cost tracking and a groundedness/count-overclaim check, moves the response cache TTL to 24h, and adds a report_howto guardrail branch so "how do I download my report?" is answered directly instead of redirected to CareBot.</p>
+</header>
+
+<div class="legend">
+  <div class="chip seed"><span class="swatch"></span><span class="seed-label">Startup / Seed</span></div>
+  <div class="chip fe"><span class="swatch"></span><span class="fe-label">Frontend</span></div>
+  <div class="chip api"><span class="swatch"></span><span class="api-label">API Layer</span></div>
+  <div class="chip pipe"><span class="swatch"></span><span class="pipe-label">Query Pipeline</span></div>
+  <div class="chip iw"><span class="swatch"></span><span class="iw-label">Ingest Worker</span></div>
+  <div class="chip store"><span class="swatch"></span><span class="store-label">Storage Layer</span></div>
+  <div class="chip llm"><span class="swatch"></span><span class="llm-label">LLM Provider Chain</span></div>
+  <div class="chip dec"><span class="swatch"></span><span class="dec-label">Decision / Branch Point</span></div>
+</div>
+
+<div class="diagram-shell">
+  <pre id="diagram-src" style="display:none">
+flowchart TD
+
+  subgraph COMPOSE["DOCKER-COMPOSE STARTUP ORDER"]
+    direction TB
+    INFRA["<div class='nb'><span class='t seed-t'>Infrastructure Ready</span><span class='d'>postgres healthy</span><span class='d'>qdrant started · redis healthy</span></div>"]
+
+    subgraph SEED["SEED SERVICE — runs once per compose up"]
+      direction TB
+      SD1["<div class='nb'><span class='t seed-t'>Read Dataset</span><span class='d'>dataset/dataset.json</span><span class='d'>compute SHA-256 hash</span></div>"]
+      SD2{"<div class='nb'><span class='t dec-t'>Manifest Check</span><span class='d'>Postgres ingest_manifest</span><span class='d'>hash match AND</span><span class='d'>PIPELINE_VERSION match?</span></div>"}
+      SD3["<div class='nb'><span class='t seed-t'>EXIT 0 immediately</span><span class='d'>&lt; 1 second</span></div>"]
+      SD4["<div class='nb'><span class='t seed-t'>run_ingest_job</span><span class='d'>same pipeline as API ingest route</span></div>"]
+      SD5{"<div class='nb'><span class='t dec-t'>Job status?</span></div>"}
+      SD6["<div class='nb'><span class='t seed-t'>Write Manifest</span><span class='d'>hash + PIPELINE_VERSION</span><span class='d'>+ review_count · EXIT 0</span></div>"]
+      SD7{"<div class='nb'><span class='t dec-t'>Attempt &lt;= 3?</span></div>"}
+      SD8["<div class='nb'><span class='t seed-t'>Backoff Wait</span><span class='d'>60s x attempt · 60s / 120s</span><span class='d'>matches OpenAI rate-limit window</span></div>"]
+      SD9["<div class='nb'><span class='t seed-t'>EXIT 1</span><span class='d'>seed_all_attempts_failed</span><span class='d'>backend does NOT start</span></div>"]
+
+      SD1 --> SD2
+      SD2 -->|"match"| SD3
+      SD2 -->|"mismatch or first run"| SD4
+      SD4 --> SD5
+      SD5 -->|"complete"| SD6
+      SD5 -->|"failed"| SD7
+      SD7 -->|"yes"| SD8
+      SD8 --> SD4
+      SD7 -->|"no"| SD9
+    end
+
+    BE["<div class='nb'><span class='t seed-t'>Backend Starts</span><span class='d'>uvicorn ready · API serving</span><span class='d'>reranker + sparse model warmup blocks</span><span class='d'>this step, not the first chat request</span></div>"]
+    FEC["<div class='nb'><span class='t seed-t'>Frontend Container Starts</span><span class='d'>node:20-alpine · npm install · vite dev</span><span class='d'>NOT gated on seed/backend readiness —</span><span class='d'>only ordered after backend container start</span></div>"]
+
+    INFRA --> SD1
+    SD3 --> BE
+    SD6 -->|"service_completed_successfully"| BE
+    BE -.->|"depends_on (order only)"| FEC
+  end
+
+  subgraph FE["FRONTEND — React 18 · Vite · TypeScript · Tailwind"]
+    direction TB
+    RS["<div class='nb'><span class='t fe-t'>RestaurantSelector</span><span class='d'>GET /restaurants</span></div>"]
+    ZS[("<div class='nb'><span class='t fe-t'>Zustand Store</span><span class='d'>restaurantId · sessionId</span><span class='d'>messages</span></div>")]
+    CW["<div class='nb'><span class='t fe-t'>ChatWindow</span></div>"]
+    MB["<div class='nb'><span class='t fe-t'>MessageBubble</span><span class='d'>confidence badge · model badge</span><span class='d'>cached badge</span></div>"]
+    EP["<div class='nb'><span class='t fe-t'>EvidencePanel</span><span class='d'>star rating · sentiment badge</span><span class='d'>conflict warning</span></div>"]
+    FB["<div class='nb'><span class='t fe-t'>FeedbackButtons</span></div>"]
+    CM["<div class='nb'><span class='t fe-t'>CorrectionModal</span></div>"]
+    RV["<div class='nb'><span class='t fe-t'>ReportView</span><span class='d'>backend returns markdown (source of truth)</span><span class='d'>rendered on-screen via react-markdown</span><span class='d'>Download PDF — client-side html2canvas+jsPDF</span></div>"]
+    HOOK["<div class='nb'><span class='t fe-t'>useSSE Hook</span><span class='d'>@microsoft/fetch-event-source</span><span class='d'>AbortController</span><span class='d'>empty deps + getState</span></div>"]
+
+    RS --> ZS
+    ZS --> CW
+    CW --> MB
+    MB --> EP
+    MB --> FB
+    FB --> CM
+    CW --> RV
+    CW --> HOOK
+  end
+
+  subgraph API["API LAYER — FastAPI · SlowAPI rate limiting · Bearer auth"]
+    direction TB
+    A1["<div class='nb'><span class='t api-t'>POST /chat/query</span><span class='d'>SSE stream · 10 req/min</span></div>"]
+    A2["<div class='nb'><span class='t api-t'>POST /chat/sessions</span></div>"]
+    A3["<div class='nb'><span class='t api-t'>POST /chat/correct</span><span class='d'>20 req/min</span></div>"]
+    A4["<div class='nb'><span class='t api-t'>POST /chat/report</span></div>"]
+    A5["<div class='nb'><span class='t api-t'>POST /ingest</span><span class='d'>5 req/min</span></div>"]
+    A6["<div class='nb'><span class='t api-t'>GET /restaurants</span></div>"]
+    A7["<div class='nb'><span class='t api-t'>GET /health · /health/ready</span><span class='d'>/health/metrics — auth required</span></div>"]
+  end
+
+  subgraph PIPE["QUERY PIPELINE — src/core/"]
+    direction TB
+    RC{"<div class='nb'><span class='t dec-t'>Redis Cache</span><span class='d'>SHA256 key · TTL 24h</span></div>"}
+    GR["<div class='nb'><span class='t pipe-t'>Guardrail</span><span class='d'>out_of_scope → canned decline</span><span class='d'>ui_question → redirect to CareBot</span><span class='d'>report_howto → answered directly</span></div>"]
+    DC["<div class='nb'><span class='t pipe-t'>Query Decomposition</span><span class='d'>Groq llama-3.3-70b</span><span class='d'>intent · aspect · sentiment</span><span class='d'>date_filter · rating_filter</span><span class='d'>sub_queries · complexity</span></div>"]
+    CR{"<div class='nb'><span class='t dec-t'>Complexity Router</span></div>"}
+    CP["<div class='nb'><span class='t pipe-t'>count_query fast path</span><span class='d'>PostgreSQL COUNT★</span><span class='d'>target &lt; 100ms · $0</span></div>"]
+    RP["<div class='nb'><span class='t pipe-t'>report fast path</span><span class='d'>OpenAI tool call</span><span class='d'>export_insights_report</span></div>"]
+    PL["<div class='nb'><span class='t pipe-t'>asyncio.gather</span><span class='d'>embed + decompose in parallel</span><span class='d'>saves ~150ms</span></div>"]
+    HR["<div class='nb'><span class='t pipe-t'>Hybrid Retrieval</span><span class='d'>Dense ANN — Qdrant named vector 'dense'</span><span class='d'>Sparse — Qdrant native, fastembed BM25</span><span class='d'>server-side RRF via query_points()</span><span class='d'>Correction ANN — threshold 0.85</span><span class='d'>Qdrant breaker → both dense+sparse degrade together</span><span class='d'>(BM25 is no longer a separate in-process index)</span></div>"]
+    RR["<div class='nb'><span class='t pipe-t'>Cross-Encoder Reranking</span><span class='d'>BAAI/bge-reranker-base</span><span class='d'>sigmoid normalised · thread executor</span><span class='d'>fallback to RRF order on failure</span><span class='d'>warmed up at startup, blocks before uvicorn accepts traffic</span></div>"]
+    RK["<div class='nb'><span class='t pipe-t'>Evidence Ranking</span><span class='d'>RRF fusion, k=60</span><span class='d'>sentiment-mapped effective_rating</span><span class='d'>recency decay 1/(days+1)</span><span class='d'>entity counts · injection penalty 0.5</span><span class='d'>staleness caveat &gt; 365 days</span></div>"]
+    SC["<div class='nb'><span class='t pipe-t'>Session Context</span><span class='d'>last 5 verbatim — PostgreSQL</span><span class='d'>top-3 ANN — Qdrant session_memory</span><span class='d'>rolling summary at msg 50</span><span class='d'>6000-token budget</span></div>"]
+    GN["<div class='nb'><span class='t pipe-t'>Response Generation</span><span class='d'>simple → gpt-4o-mini, max 400 tok</span><span class='d'>complex → gpt-4.1, max 800 tok</span><span class='d'>structured output via beta.parse</span><span class='d'>SSE token stream</span><span class='d'>real token usage → RequestTrace.cost_usd</span><span class='d'>groundedness_ok count-overclaim check</span></div>"]
+
+    RC -->|"MISS"| GR
+    GR -->|"pass-through"| DC
+    DC --> CR
+    CR -->|"count_query"| CP
+    CR -->|"report"| RP
+    CR -->|"simple / complex"| PL
+    PL --> HR
+    HR --> RR
+    RR --> RK
+    RK --> SC
+    SC --> GN
+  end
+
+  subgraph IW["INGEST WORKER — asyncio.create_task, never blocks"]
+    direction TB
+    PV["<div class='nb'><span class='t iw-t'>PIPELINE_VERSION = 1.0.0</span><span class='d'>bump when: embedding model,</span><span class='d'>chunking strategy, or entity</span><span class='d'>extraction prompt changes</span></div>"]
+    PJ["<div class='nb'><span class='t iw-t'>Parse JSON</span><span class='d'>utf-8-sig BOM</span><span class='d'>list(data.values())[0]</span><span class='d'>SQL string outer key</span></div>"]
+    FC["<div class='nb'><span class='t iw-t'>Field Correction Defaults</span><span class='d'>createdAt → defensive parse</span><span class='d'>username → Anonymous</span><span class='d'>sentiment → Neutral · source → Unknown</span></div>"]
+    SRC["<div class='nb'><span class='t iw-t'>Sentiment-Rating Conflict</span><span class='d'>pre-computed sentiment vs rating</span><span class='d'>sentiment_rating_agree flag</span><span class='d'>zero cost — no LLM</span></div>"]
+    IS["<div class='nb'><span class='t iw-t'>Injection Scan</span><span class='d'>regex — 12 patterns</span><span class='d'>has_injection_attempt flag</span><span class='d'>never blocks storage</span><span class='d'>relevance penalty 0.5 at query time</span></div>"]
+    CK["<div class='nb'><span class='t iw-t'>Adaptive Chunking — NLTK</span><span class='d'>len ≤ 256 tok → single chunk</span><span class='d'>len &gt; 256 → sliding window, 32-tok overlap</span><span class='d'>sent_tokenize sentence boundaries</span></div>"]
+    EE["<div class='nb'><span class='t iw-t'>Entity Extraction</span><span class='d'>gpt-4o-mini per chunk</span><span class='d'>food_entities JSON array</span><span class='d'>~$0.075 per 500-review ingest</span></div>"]
+    BE2["<div class='nb'><span class='t iw-t'>Batch Embedding</span><span class='d'>text-embedding-3-large</span><span class='d'>batch_size = 100</span><span class='d'>dim verify 3072 on first call</span></div>"]
+    QU["<div class='nb'><span class='t iw-t'>Qdrant Upsert</span><span class='d'>review_date_ts as Unix int</span><span class='d'>point_id = hash(restaurant+user+date+idx)</span></div>"]
+    BI["<div class='nb'><span class='t iw-t'>Redis Cache Invalidate</span><span class='d'>invalidate_restaurant() on ingest</span><span class='d'>bursts stale cached chat answers</span></div>"]
+
+    PJ --> FC --> SRC --> IS --> CK --> EE --> BE2 --> QU --> BI
+  end
+
+  subgraph STORE["STORAGE LAYER"]
+    direction TB
+    PG[("<div class='nb'><span class='t store-t'>PostgreSQL</span><span class='d'>chat_session · chat_message</span><span class='d'>chat_correction — audit log</span><span class='d'>review_chunk_meta · ingest_job</span><span class='d'>ingest_manifest — collection_name UNIQUE</span><span class='d'>file_hash SHA-256 · pipeline_version</span><span class='d'>review_count</span></div>")]
+    QD[("<div class='nb'><span class='t store-t'>Qdrant</span><span class='d'>review_chunks — 3072-dim</span><span class='d'>correction_embeddings</span><span class='d'>session_memory</span></div>")]
+    RD[("<div class='nb'><span class='t store-t'>Redis</span><span class='d'>response cache — TTL 24h</span><span class='d'>rate limit counters</span></div>")]
+  end
+
+  subgraph LLM["LLM PROVIDER CHAIN — circuit breakers + retry"]
+    direction TB
+    GQ["<div class='nb'><span class='t llm-t'>Groq</span><span class='d'>llama-3.3-70b-versatile</span><span class='d'>decomposition · guardrail · temp 0.0</span></div>"]
+    GM["<div class='nb'><span class='t llm-t'>gpt-4o-mini</span><span class='d'>simple queries · decomp fallback</span><span class='d'>session summary · entity extraction</span></div>"]
+    GC["<div class='nb'><span class='t llm-t'>gpt-4.1</span><span class='d'>complex queries · report summary</span></div>"]
+    EM["<div class='nb'><span class='t llm-t'>text-embedding-3-large</span><span class='d'>3072 dims · batch_size 100</span></div>"]
+    RE["<div class='nb'><span class='t llm-t'>BAAI/bge-reranker-base</span><span class='d'>HuggingFace — local · ~50ms CPU</span><span class='d'>swappable via RERANKER_MODEL</span></div>"]
+
+    GQ -->|"429 → fallback"| GM
+  end
+
+  %% Startup wiring
+  BE --> API
+  FEC --> FE
+  SD2 -.->|"read manifest"| PG
+  SD6 -.->|"write manifest"| PG
+  SD4 -.->|"calls same pipeline directly"| PJ
+
+  %% Frontend to API
+  HOOK -->|"POST SSE · Bearer"| A1
+  CM -->|"POST · Bearer"| A3
+  RV -->|"POST · Bearer"| A4
+  RS -->|"GET · Bearer"| A6
+
+  %% API to Pipeline
+  A1 --> RC
+  RC -->|"HIT — return immediately"| A1
+  GN -->|"write on first call"| RC
+
+  %% Ingest flow entry
+  A5 --> PJ
+
+  %% Correction flow
+  A3 -.-> QD
+
+  %% Storage reads / writes
+  CP -.-> PG
+  RP -.-> PG
+  RP -.-> QD
+  HR -.-> QD
+  SC -.-> QD
+  SC -.-> PG
+  GN -.-> PG
+  RC -.-> RD
+  BI -.-> QD
+  QU -.-> PG
+
+  %% LLM wiring
+  DC -->|"primary"| GQ
+  GN -->|"simple"| GM
+  GN -->|"complex"| GC
+  BE2 -.-> EM
+  EE -.-> GM
+  RR -.-> RE
+
+  classDef feNode    fill:#EEF2FF,stroke:#4338CA,stroke-width:1.8px,color:#1E1B4B,rx:10,ry:10;
+  classDef apiNode   fill:#F5F3FF,stroke:#7C3AED,stroke-width:1.8px,color:#2E1065,rx:10,ry:10;
+  classDef pipeNode  fill:#ECFDF5,stroke:#0F766E,stroke-width:1.8px,color:#022C22,rx:10,ry:10;
+  classDef iwNode    fill:#FFFBEB,stroke:#B45309,stroke-width:1.8px,color:#451A03,rx:10,ry:10;
+  classDef storeNode fill:#F1F5F9,stroke:#334155,stroke-width:1.8px,color:#0F172A,rx:10,ry:10;
+  classDef llmNode   fill:#FFF1F3,stroke:#BE123C,stroke-width:1.8px,color:#4C0519,rx:10,ry:10;
+  classDef decNode   fill:#FEF9C3,stroke:#CA8A04,stroke-width:2.2px,color:#422006;
+  classDef seedNode  fill:#F0F9FF,stroke:#0369A1,stroke-width:1.8px,color:#082F49,rx:10,ry:10;
+  classDef noteNode  fill:#FFFDF7,stroke:#B45309,stroke-width:1.6px,stroke-dasharray:6 4,color:#451A03,rx:10,ry:10;
+
+  class RS,ZS,CW,MB,EP,FB,CM,RV,HOOK feNode;
+  class A1,A2,A3,A4,A5,A6,A7 apiNode;
+  class GR,DC,CP,RP,PL,HR,RR,RK,SC,GN pipeNode;
+  class PJ,FC,SRC,IS,CK,EE,BE2,QU,BI iwNode;
+  class PG,QD,RD storeNode;
+  class GQ,GM,GC,EM,RE llmNode;
+  class RC,CR,SD2,SD5,SD7 decNode;
+  class INFRA,SD1,SD3,SD4,SD6,SD8,SD9,BE,FEC seedNode;
+  class PV noteNode;
+
+  style COMPOSE fill:#F7FBFF,stroke:#BAE6FD,stroke-width:1.5px
+  style SEED fill:#FDFEFF,stroke:#7DD3FC,stroke-width:1.5px
+  style FE fill:#FBFCFF,stroke:#C7D2FE,stroke-width:1.5px
+  style API fill:#FCFBFF,stroke:#DDD6FE,stroke-width:1.5px
+  style PIPE fill:#F7FEFC,stroke:#99F6E4,stroke-width:1.5px
+  style IW fill:#FFFDF7,stroke:#FDE68A,stroke-width:1.5px
+  style STORE fill:#F8FAFC,stroke:#CBD5E1,stroke-width:1.5px
+  style LLM fill:#FFF8F9,stroke:#FECDD3,stroke-width:1.5px
+  </pre>
+  <div id="diagram-target"></div>
+</div>
+
+<footer class="note">
+  Solid arrows show control flow; dashed arrows show data reads/writes or provider calls. docker-compose brings up infrastructure,
+  runs the seed service once, and only starts the backend on service_completed_successfully. The seed checks the ingest_manifest
+  table (hash + PIPELINE_VERSION) and exits in under a second on a match; on a mismatch or first run it calls run_ingest_job — the
+  same function behind POST /ingest — with up to three attempts and 60s x attempt backoff.
+  <br/><br/>
+  <strong>If seed exhausts all 3 attempts (SD9, EXIT 1):</strong> the backend container never starts (its
+  service_completed_successfully dependency is never satisfied). The frontend container, however, is NOT gated on the backend's
+  readiness — it starts independently and serves the React app normally. A user opening the app sees the UI shell and
+  RestaurantSelector load fine, but GET /restaurants fails; the selector's isError state renders "Server unavailable. Is the
+  backend running?" with a Retry button rather than an infinite spinner or a cryptic network error. This is a deliberate
+  fail-closed design at the data layer (never serve queries against a partially/incorrectly ingested dataset) paired with a
+  fail-open UI shell (the frontend itself never crashes just because the backend isn't up yet).
+</footer>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+
+  let layout = "dagre";
+  try {
+    const elkLayouts = (await import("https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0/dist/mermaid-layout-elk.esm.min.mjs")).default;
+    mermaid.registerLayoutLoaders(elkLayouts);
+    layout = "elk";
+  } catch (e) {
+    console.warn("ELK layout unavailable, falling back to dagre:", e);
+  }
+
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "loose",
+    theme: "base",
+    layout: layout,
+    elk: {
+      mergeEdges: false,
+      nodePlacementStrategy: "NETWORK_SIMPLEX",
+      cycleBreakingStrategy: "GREEDY_MODEL_ORDER"
+    },
+    themeVariables: {
+      fontFamily: "Inter, Segoe UI, sans-serif",
+      primaryColor: "#EEF2FF",
+      primaryBorderColor: "#4338CA",
+      lineColor: "#94A3B8",
+      edgeLabelBackground: "#FFFFFF"
+    },
+    flowchart: {
+      htmlLabels: true,
+      useMaxWidth: false,
+      curve: "linear",
+      nodeSpacing: 40,
+      rankSpacing: 55,
+      padding: 10
+    }
+  });
+
+  const src = document.getElementById("diagram-src").textContent;
+  const { svg } = await mermaid.render("archDiagram", src);
+  document.getElementById("diagram-target").innerHTML = svg;
+</script>
+
+</body>
+</html>

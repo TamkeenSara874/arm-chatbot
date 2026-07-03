@@ -19,7 +19,17 @@ def test_out_of_scope_returns_canned_response() -> None:
 def test_ui_question_returns_canned_response() -> None:
     response = check_guardrail("ui_question")
     assert response is not None
-    assert "support team" in response.lower() or "app" in response.lower()
+    assert "carebot" in response.lower()
+
+
+def test_report_howto_answers_directly_not_a_redirect() -> None:
+    response = check_guardrail("report_howto")
+    assert response is not None
+    assert "report" in response.lower()
+    assert "download" in response.lower()
+    # Must not deflect to CareBot/support -- this one is answered directly.
+    assert "carebot" not in response.lower()
+    assert "support team" not in response.lower()
 
 
 def test_manipulation_request_returns_canned_response() -> None:

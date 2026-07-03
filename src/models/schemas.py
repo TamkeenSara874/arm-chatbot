@@ -64,6 +64,7 @@ QueryIntent = Literal[
     "factual",
     "out_of_scope",
     "ui_question",
+    "report_howto",
     "manipulation_request",
     "multi_location",
     "allergen",

@@ -22,7 +22,7 @@ async def liveness() -> dict:
 @router.get("/health/ready", summary="Readiness probe — checks Postgres, Qdrant, Redis")
 async def readiness(db: DbSession) -> JSONResponse:
     settings = get_settings()
-    checks: dict[str, str] = {}
+    checks: dict[str, str | bool] = {}
     overall = "ready"
 
     # Postgres
@@ -67,6 +67,17 @@ async def readiness(db: DbSession) -> JSONResponse:
         logger.warning("readiness_qdrant_failed", error=str(exc))
         checks["qdrant"] = "unreachable"
         overall = "not_ready"
+
+    # Model warmup status -- informational only, doesn't gate `overall`.
+    # Warmup already runs (and blocks) at startup in main.py's lifespan
+    # specifically so a chat query is never the first thing that triggers
+    # the ~20-30s reranker/sparse-model load; surfaced here so that can be
+    # confirmed at a glance instead of grepping startup logs.
+    from src.core.reranker import is_warmed_up as reranker_is_warmed_up
+    from src.services.embedding.sparse_embedder import is_warmed_up as sparse_is_warmed_up
+
+    checks["reranker_warmed_up"] = reranker_is_warmed_up(settings.reranker_model)
+    checks["sparse_embedder_warmed_up"] = sparse_is_warmed_up()
 
     status_code = 200 if overall == "ready" else 503
     return JSONResponse(content={"status": overall, **checks}, status_code=status_code)
