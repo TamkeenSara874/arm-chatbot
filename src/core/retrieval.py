@@ -70,7 +70,15 @@ async def hybrid_retrieve(
     if reranker_model:
         from src.core.reranker import rerank
 
-        candidates = results[: top_k * 4]
+        # Capped independent of top_k -- for aggregation queries (top_k=20)
+        # this was results[:80], and cross-encoder scoring is CPU-bound with
+        # cost roughly linear in candidate count. Reranking measurably 80
+        # candidates vs. 24 for a simple query (top_k=6) was the dominant
+        # cost in a live reproduction that took 52s end-to-end, ~45s of it
+        # before the first token. Reranking quality gains plateau well
+        # before 30 candidates; capping here keeps latency bounded across
+        # all top_k values while still returning the full top_k results.
+        candidates = results[: min(top_k * 4, 30)]
         return await rerank(query, candidates, model_name=reranker_model, top_k=top_k)
 
     return results[:top_k]

@@ -136,6 +136,37 @@ class TestHybridRetrieve:
         assert results == []
 
     @pytest.mark.asyncio
+    async def test_reranker_candidate_pool_capped_regardless_of_top_k(self) -> None:
+        """Aggregation queries (top_k=20) must not balloon the rerank candidate pool.
+
+        Reranking is CPU-bound cross-encoder scoring; sending it 80 candidates
+        (top_k*4 uncapped) instead of a capped pool was the dominant cost in a
+        live reproduction that took 52s end-to-end for one query.
+        """
+        from src.core.retrieval import hybrid_retrieve
+
+        chunks = [_sr(f"c{i}", 1.0 / (i + 1)) for i in range(100)]
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(return_value=chunks)
+
+        with (
+            _sparse_patch(),
+            patch("src.core.reranker.rerank", AsyncMock(return_value=chunks[:20])) as mock_rerank,
+        ):
+            await hybrid_retrieve(
+                query="what should we improve",
+                restaurant_id=1,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
+                top_k=20,
+                reranker_model="BAAI/bge-reranker-base",
+            )
+
+        candidates_passed = mock_rerank.call_args.args[1]
+        assert len(candidates_passed) <= 30
+
+    @pytest.mark.asyncio
     async def test_returns_empty_when_embedding_fails(self) -> None:
         from src.core.retrieval import hybrid_retrieve
 
