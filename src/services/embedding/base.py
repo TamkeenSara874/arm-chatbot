@@ -1,4 +1,9 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+
+# Invoked with total tokens billed for one embed() call. Optional and
+# additive, same pattern as BaseLLMClient's UsageCallback.
+EmbeddingUsageCallback = Callable[[int], None]
 
 
 class BaseEmbedder(ABC):
@@ -9,7 +14,9 @@ class BaseEmbedder(ABC):
     def dim(self) -> int: ...
 
     @abstractmethod
-    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+    async def embed(
+        self, texts: list[str], usage_callback: EmbeddingUsageCallback | None = None
+    ) -> list[list[float]]: ...
 
     async def embed_one(self, text: str) -> list[float]:
         results = await self.embed([text])

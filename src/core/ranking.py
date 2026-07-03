@@ -30,6 +30,21 @@ class RankingResult:
     low_evidence: bool
 
 
+def _effective_rating(payload: dict) -> float:
+    """Sentiment-mapped rating used when text sentiment disagrees with the star rating.
+
+    Shared by the composite-score loop and the evidence-building step so the
+    number the LLM/frontend sees always matches what ranking actually used --
+    previously the raw star rating leaked into EvidenceItem even when
+    sentiment_conflict was True.
+    """
+    rating = payload.get("rating")
+    sentiment_rating_agree = payload.get("sentiment_rating_agree", True)
+    if rating is not None and sentiment_rating_agree:
+        return rating
+    return SENTIMENT_RATING_MAP.get(payload.get("sentiment_label") or "", 3.0)
+
+
 def reciprocal_rank_fusion(
     result_lists: list[list[SearchResult]],
     k: int = 60,
@@ -53,6 +68,7 @@ def rank_results(
     today: datetime | None = None,
     top_k: int = 6,
     staleness_days: int | None = None,
+    has_explicit_date_filter: bool = False,
 ) -> RankingResult:
     """Apply composite scoring and return ranked evidence with diagnostics.
 
@@ -79,15 +95,7 @@ def rank_results(
         p = result.payload
         rrf_score = result.score
 
-        rating = p.get("rating")
-        sentiment_label = p.get("sentiment_label")
-        sentiment_rating_agree = p.get("sentiment_rating_agree", True)
-
-        if rating is not None and sentiment_rating_agree:
-            effective_rating = rating
-        else:
-            effective_rating = SENTIMENT_RATING_MAP.get(sentiment_label or "", 3.0)
-
+        effective_rating = _effective_rating(p)
         rating_contribution = effective_rating / 5.0
 
         review_date = _parse_date(p.get("review_date"))
@@ -127,7 +135,7 @@ def rank_results(
     recency_spike = bool(top) and (recent_count / len(top)) > RECENCY_SPIKE_RATIO
 
     staleness_caveat: str | None = None
-    if dates_in_top and not recency_spike:
+    if dates_in_top and not recency_spike and not has_explicit_date_filter:
         oldest = min(dates_in_top)
         if (today - oldest).days > staleness_days:
             staleness_caveat = (
@@ -140,6 +148,7 @@ def rank_results(
             snippet=result.payload.get("text", ""),
             username=result.payload.get("username"),
             rating=result.payload.get("rating"),
+            effective_rating=_effective_rating(result.payload),
             source=result.payload.get("source"),
             sentiment=result.payload.get("sentiment_label"),
             sentiment_conflict=not result.payload.get("sentiment_rating_agree", True),

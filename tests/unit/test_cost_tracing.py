@@ -1,7 +1,7 @@
 """Unit tests for cost estimation and per-request tracing infrastructure."""
 
 from src.utils.cost_tracker import estimate_cost
-from src.utils.tracing import RequestTrace, timed
+from src.utils.tracing import IngestTrace, RequestTrace, timed
 
 
 class TestEstimateCost:
@@ -79,4 +79,51 @@ class TestRequestTrace:
         trace.record_tokens("gpt-4o-mini", 300, 80)
         trace.confidence = 0.88
         trace.evidence_count = 4
+        trace.emit()
+
+    def test_groundedness_ok_defaults_true(self) -> None:
+        trace = RequestTrace(session_id="s1", restaurant_id=1)
+        assert trace.groundedness_ok is True
+
+
+class TestIngestTrace:
+    def test_total_ms_sums_stages(self) -> None:
+        trace = IngestTrace(job_id="j1", restaurant_id=1)
+        trace.entity_extraction_ms = 100.0
+        trace.embedding_upsert_ms = 200.0
+        assert trace.total_ms == 300.0
+
+    def test_record_entity_tokens_accumulates_cost(self) -> None:
+        trace = IngestTrace(job_id="j1", restaurant_id=1)
+        trace.record_entity_tokens("gpt-4o-mini", prompt_tokens=1000, completion_tokens=200)
+        expected = (1000 * 0.15 + 200 * 0.60) / 1_000_000
+        assert abs(trace.cost_usd - expected) < 1e-9
+        assert trace.prompt_tokens == 1000
+        assert trace.completion_tokens == 200
+        assert trace.entity_model == "gpt-4o-mini"
+
+    def test_record_embedding_tokens_accumulates_cost(self) -> None:
+        trace = IngestTrace(job_id="j1", restaurant_id=1)
+        trace.record_embedding_tokens("text-embedding-3-large", total_tokens=5000)
+        expected = 5000 * 0.13 / 1_000_000
+        assert abs(trace.cost_usd - expected) < 1e-9
+        assert trace.embedding_tokens == 5000
+        assert trace.embedding_model == "text-embedding-3-large"
+
+    def test_costs_from_both_sources_accumulate(self) -> None:
+        trace = IngestTrace(job_id="j1", restaurant_id=1)
+        trace.record_entity_tokens("gpt-4o-mini", 1000, 200)
+        trace.record_embedding_tokens("text-embedding-3-large", 5000)
+        expected = (1000 * 0.15 + 200 * 0.60) / 1_000_000 + 5000 * 0.13 / 1_000_000
+        assert abs(trace.cost_usd - expected) < 1e-9
+
+    def test_emit_does_not_raise(self) -> None:
+        trace = IngestTrace(job_id="j1", restaurant_id=1)
+        trace.entity_extraction_ms = 500.0
+        trace.embedding_upsert_ms = 1500.0
+        trace.record_entity_tokens("gpt-4o-mini", 1000, 200)
+        trace.record_embedding_tokens("text-embedding-3-large", 5000)
+        trace.total_reviews = 100
+        trace.total_chunks = 250
+        trace.skipped_empty = 3
         trace.emit()

@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 import structlog
 from groq import AsyncGroq
 
-from src.services.llm.base import BaseLLMClient, BaseModelT
+from src.services.llm.base import BaseLLMClient, BaseModelT, UsageCallback
 from src.utils.circuit_breaker import groq_breaker
 from src.utils.metrics import llm_request_latency, llm_request_total
 from src.utils.retry import fetch_with_retry
@@ -27,6 +27,7 @@ class GroqClient(BaseLLMClient):
         system: str = "",
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> str:
         async def _call() -> str:
             response = await self.client.chat.completions.create(
@@ -38,6 +39,8 @@ class GroqClient(BaseLLMClient):
                     {"role": "user", "content": prompt},
                 ],
             )
+            if usage_callback and response.usage:
+                usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens)
             return response.choices[0].message.content or ""
 
         start = time.perf_counter()
@@ -59,6 +62,7 @@ class GroqClient(BaseLLMClient):
         response_format: type[BaseModelT],
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> BaseModelT:
         # Groq supports JSON mode; validate the output against the Pydantic schema
         async def _call() -> BaseModelT:
@@ -73,6 +77,8 @@ class GroqClient(BaseLLMClient):
                 ],
             )
             raw = response.choices[0].message.content or "{}"
+            if usage_callback and response.usage:
+                usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens)
             return response_format.model_validate_json(raw)
 
         start = time.perf_counter()
@@ -95,5 +101,6 @@ class GroqClient(BaseLLMClient):
         system: str = "",
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> AsyncIterator[str]:
         raise NotImplementedError("GroqClient is used for decomposition only, not streaming")

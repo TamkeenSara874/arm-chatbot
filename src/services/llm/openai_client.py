@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 import structlog
 from openai import AsyncOpenAI
 
-from src.services.llm.base import BaseLLMClient, BaseModelT
+from src.services.llm.base import BaseLLMClient, BaseModelT, UsageCallback
 from src.utils.circuit_breaker import openai_breaker
 from src.utils.metrics import llm_request_latency, llm_request_total
 from src.utils.retry import fetch_with_retry
@@ -27,6 +27,7 @@ class OpenAIClient(BaseLLMClient):
         system: str = "",
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> str:
         async def _call() -> str:
             response = await self.client.chat.completions.create(
@@ -38,6 +39,8 @@ class OpenAIClient(BaseLLMClient):
                     {"role": "user", "content": prompt},
                 ],
             )
+            if usage_callback and response.usage:
+                usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens)
             return response.choices[0].message.content or ""
 
         start = time.perf_counter()
@@ -59,6 +62,7 @@ class OpenAIClient(BaseLLMClient):
         response_format: type[BaseModelT],
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> BaseModelT:
         async def _call() -> BaseModelT:
             response = await self.client.beta.chat.completions.parse(
@@ -74,6 +78,8 @@ class OpenAIClient(BaseLLMClient):
             parsed = response.choices[0].message.parsed
             if parsed is None:
                 raise ValueError("OpenAI structured output returned None parsed result")
+            if usage_callback and response.usage:
+                usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens)
             return parsed
 
         start = time.perf_counter()
@@ -96,6 +102,7 @@ class OpenAIClient(BaseLLMClient):
         system: str = "",
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> AsyncIterator[str]:
         async def _init():
             return await self.client.chat.completions.create(
@@ -107,6 +114,7 @@ class OpenAIClient(BaseLLMClient):
                     {"role": "user", "content": prompt},
                 ],
                 stream=True,
+                stream_options={"include_usage": True},
             )
 
         stream_resp = await fetch_with_retry(
@@ -115,6 +123,12 @@ class OpenAIClient(BaseLLMClient):
         llm_request_total.labels(provider="openai", model=self.model, intent="stream").inc()
 
         async for chunk in stream_resp:
+            # The final chunk of a stream_options={"include_usage": True} stream
+            # carries usage with an empty choices list -- guard the index access.
+            if usage_callback and chunk.usage:
+                usage_callback(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+            if not chunk.choices:
+                continue
             content = chunk.choices[0].delta.content
             if content:
                 yield content

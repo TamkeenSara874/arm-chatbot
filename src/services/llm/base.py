@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import TypeVar
 
 import structlog
@@ -10,6 +10,11 @@ from pydantic import BaseModel
 logger = structlog.get_logger()
 
 BaseModelT = TypeVar("BaseModelT", bound=BaseModel)
+
+# Invoked with (prompt_tokens, completion_tokens) once real usage is known.
+# Optional and additive: callers that don't pass one see no behavior change,
+# which is why this doesn't touch the return type of complete()/stream().
+UsageCallback = Callable[[int, int], None]
 
 
 class AllModelsFailedError(Exception):
@@ -26,6 +31,7 @@ class BaseLLMClient(ABC):
         system: str = "",
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> str: ...
 
     @abstractmethod
@@ -36,6 +42,7 @@ class BaseLLMClient(ABC):
         response_format: type[BaseModelT],
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> BaseModelT: ...
 
     @abstractmethod
@@ -45,6 +52,7 @@ class BaseLLMClient(ABC):
         system: str = "",
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> AsyncIterator[str]: ...
 
 
@@ -62,11 +70,14 @@ class FallbackLLMClient(BaseLLMClient):
         system: str = "",
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> str:
         last_exc: Exception | None = None
         for client in self.clients:
             try:
-                return await client.complete(prompt, system, max_tokens, temperature)
+                return await client.complete(
+                    prompt, system, max_tokens, temperature, usage_callback
+                )
             except Exception as exc:
                 last_exc = exc
                 logger.warning(
@@ -84,12 +95,13 @@ class FallbackLLMClient(BaseLLMClient):
         response_format: type[BaseModelT],
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> BaseModelT:
         last_exc: Exception | None = None
         for client in self.clients:
             try:
                 return await client.complete_structured(
-                    prompt, system, response_format, max_tokens, temperature
+                    prompt, system, response_format, max_tokens, temperature, usage_callback
                 )
             except Exception as exc:
                 last_exc = exc
@@ -109,11 +121,14 @@ class FallbackLLMClient(BaseLLMClient):
         system: str = "",
         max_tokens: int = 1024,
         temperature: float = 0.3,
+        usage_callback: UsageCallback | None = None,
     ) -> AsyncIterator[str]:
         last_exc: Exception | None = None
         for client in self.clients:
             try:
-                async for chunk in client.stream(prompt, system, max_tokens, temperature):
+                async for chunk in client.stream(
+                    prompt, system, max_tokens, temperature, usage_callback
+                ):
                     yield chunk
                 return
             except NotImplementedError:

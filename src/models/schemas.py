@@ -11,6 +11,10 @@ class EvidenceItem(BaseModel):
     snippet: str
     username: str | None = None
     rating: float | None = None
+    # Sentiment-mapped rating used when sentiment_conflict=True (e.g. a 5-star
+    # review with a text complaint scores as if it were ~1.5). Equal to
+    # `rating` when the star rating and text sentiment agree.
+    effective_rating: float | None = None
     source: str | None = None
     sentiment: str | None = None
     sentiment_conflict: bool = False
@@ -47,8 +51,31 @@ class RatingFilter(BaseModel):
     max: float | None = None
 
 
+QueryIntent = Literal[
+    "best_item",
+    "worst_item",
+    "sentiment_overview",
+    "specific_aspect",
+    "comparison",
+    "aggregation",
+    "count_query",
+    "report",
+    "improvement",
+    "factual",
+    "out_of_scope",
+    "ui_question",
+    "manipulation_request",
+    "multi_location",
+    "allergen",
+]
+
+
 class DecomposedQuery(BaseModel):
-    intent: str
+    # Constrained to the exact intent set the decomposition prompt documents so
+    # a malformed/hallucinated intent fails Pydantic validation (triggering
+    # decompose_query()'s retry-then-safe-fallback) instead of silently
+    # skipping the guardrail check, which only matches against known intents.
+    intent: QueryIntent
     aspect_filter: str | None = None
     sentiment_filter: str | None = None
     entities: list[str] = []
