@@ -13,7 +13,14 @@ logger = structlog.get_logger()
 
 _MODEL_NAME = "Qdrant/bm25"
 _model_instance: _SparseModel | None = None
-_model_lock = asyncio.Lock()
+_model_lock: asyncio.Lock | None = None
+
+
+def _get_model_lock() -> asyncio.Lock:
+    global _model_lock
+    if _model_lock is None:
+        _model_lock = asyncio.Lock()
+    return _model_lock
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +33,7 @@ async def _get_model() -> _SparseModel:
     global _model_instance
     if _model_instance is not None:
         return _model_instance
-    async with _model_lock:
+    async with _get_model_lock():
         if _model_instance is not None:
             return _model_instance
         loop = asyncio.get_running_loop()
@@ -39,6 +46,16 @@ def _load_model() -> _SparseModel:
     from fastembed import SparseTextEmbedding
 
     return SparseTextEmbedding(model_name=_MODEL_NAME)
+
+
+async def warmup_sparse_embedder() -> None:
+    """Pre-load the sparse embedding model at startup to avoid first-request delay."""
+    await _get_model()
+
+
+def is_warmed_up() -> bool:
+    """True once warmup_sparse_embedder() (or any embed call) has completed."""
+    return _model_instance is not None
 
 
 async def compute_sparse_vector(text: str) -> SparseVector:

@@ -18,7 +18,9 @@ class TestLoadCrossEncoder:
         mock_instance = MagicMock()
         mock_ce_cls.return_value = mock_instance
 
-        with patch.dict("sys.modules", {"sentence_transformers": MagicMock(CrossEncoder=mock_ce_cls)}):
+        with patch.dict(
+            "sys.modules", {"sentence_transformers": MagicMock(CrossEncoder=mock_ce_cls)}
+        ):
             result = _load_cross_encoder("BAAI/bge-reranker-base")
 
         mock_ce_cls.assert_called_once_with("BAAI/bge-reranker-base")

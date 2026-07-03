@@ -42,6 +42,12 @@ htmlcov/
 *.log
 docker-compose.override.yml
 
+# Runtime outputs
+logs/
+
+# Local dataset (raw data, not committed)
+dataset/
+
 # Node (frontend)
 node_modules/
 frontend/dist/

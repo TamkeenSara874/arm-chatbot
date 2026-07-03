@@ -3,9 +3,7 @@ import logging
 import structlog
 
 
-def _truncate_long_values(
-    _logger: object, _method: str, event_dict: dict
-) -> dict:
+def _truncate_long_values(_logger: object, _method: str, event_dict: dict) -> dict:
     """Truncate any string value over 140 chars to keep log lines readable."""
     for key, value in event_dict.items():
         if key in ("event", "timestamp", "level", "logger"):

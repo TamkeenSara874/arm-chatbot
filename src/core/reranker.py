@@ -15,7 +15,23 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 _model_cache: dict[str, CrossEncoder] = {}
-_load_lock = asyncio.Lock()
+_load_lock: asyncio.Lock | None = None
+
+
+def _get_load_lock() -> asyncio.Lock:
+    global _load_lock
+    if _load_lock is None:
+        _load_lock = asyncio.Lock()
+    return _load_lock
+
+
+def is_warmed_up(model_name: str) -> bool:
+    """True once load_reranker(model_name) has completed at least once.
+
+    Exposed for /health/ready so a chat query is never the first thing that
+    triggers the ~20-30s model download/load.
+    """
+    return model_name in _model_cache
 
 
 def _sigmoid(x: float) -> float:
@@ -43,7 +59,7 @@ async def load_reranker(model_name: str) -> CrossEncoder:
     """
     if model_name in _model_cache:
         return _model_cache[model_name]
-    async with _load_lock:
+    async with _get_load_lock():
         if model_name in _model_cache:
             return _model_cache[model_name]
         loop = asyncio.get_event_loop()
