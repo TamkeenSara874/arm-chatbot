@@ -43,6 +43,12 @@ chat_response_complex:
         exact -- state it verbatim in your answer rather than counting or estimating from the evidence
         chunks yourself. This applies to compound questions that mix a countable part with a
         generative part (e.g. "how many positive reviews do I have, and how can I improve?").
+    14. NAMED-PERSON QUESTIONS: if the question (or a sub-question) refers to a specific named person
+        (a reviewer or staff member, e.g. "what did Alice think about the pasta?"), check whether that
+        exact name appears in the evidence's username field. If it does not appear, say plainly that no
+        reviewer by that name was found in the available reviews -- do NOT answer as if that person's
+        opinion was found, and do NOT substitute a different reviewer's comment as if it were that
+        person's. The question naming a person does not mean that person exists in the data.
   user_prompt: |
     Question: {query}
     Sub-questions to address (answer each): {sub_queries}

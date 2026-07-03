@@ -62,6 +62,7 @@ from src.models.schemas import (
     ReportResponse,
     SessionCreateRequest,
     SessionResponse,
+    SubAnswer,
 )
 from src.services.cache import RedisCache
 from src.services.embedding.base import BaseEmbedder
@@ -609,16 +610,40 @@ async def _pipeline_stream(
             trace.generation_ms = (time.perf_counter() - t_gen) * 1000.0
             trace.generation_model = model_used
 
+        # The simple/complex prompts instruct the model to return a JSON
+        # object ({"answer": ..., "sub_answers": [...], ...}), but streaming
+        # concatenates raw tokens -- full_answer is that JSON text verbatim,
+        # not the extracted answer. Parse it back out here; previously this
+        # was skipped entirely, so every response showed the raw JSON blob
+        # (braces, "answer": key, etc.) as the visible answer text. The
+        # no_evidence_gate branch's full_answer is already plain text, not
+        # JSON, so a parse failure there is expected and falls back to the
+        # raw string unchanged.
+        answer_text = full_answer
+        sub_answers: list[SubAnswer] = []
+        try:
+            parsed = json.loads(full_answer)
+            if isinstance(parsed, dict):
+                answer_text = str(parsed.get("answer", full_answer))
+                sub_answers = [
+                    SubAnswer(sub_query=str(sa.get("sub_query", "")), answer=str(sa.get("answer", "")))
+                    for sa in parsed.get("sub_answers", [])
+                    if isinstance(sa, dict)
+                ]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
         # Groundedness heuristic: does the answer state a review/mention count
         # higher than what was actually retrieved? Cheap code-only check (no
         # extra LLM call) used as the accuracy signal alongside confidence.
         trace.groundedness_ok = check_count_groundedness(
-            full_answer, len(ranked.evidence), precomputed_count
+            answer_text, len(ranked.evidence), precomputed_count
         )
 
         # Build structured response for the final event
         structured = ChatResponseSchema(
-            answer=full_answer,
+            answer=answer_text,
+            sub_answers=sub_answers,
             evidence=ranked.evidence,
             confidence=_estimate_confidence(ranked, trace.groundedness_ok),
             caveats=ranked.staleness_caveat,
@@ -643,13 +668,16 @@ async def _pipeline_stream(
         }
         yield {"event": "done", "data": json.dumps(final_payload)}
 
-        # Post-response: persist, session memory, cache — fire-and-forget
+        # Post-response: persist, session memory, cache — fire-and-forget.
+        # Persists/caches structured.answer (the parsed text), not the raw
+        # full_answer JSON blob -- otherwise reloaded history, session
+        # context, and cache hits would all still show the unparsed JSON.
         asyncio.create_task(
             _post_response_tasks(
                 session_id=body.session_id,
                 message_id=message_id,
                 sanitized=sanitized,
-                full_answer=full_answer,
+                full_answer=structured.answer,
                 structured=structured,
                 model_used=model_used,
                 complexity=decomposed.complexity,
