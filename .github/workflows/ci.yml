@@ -97,9 +97,19 @@ jobs:
       - name: Run Alembic migrations
         run: alembic upgrade head
       - name: Run unit tests (no LLM)
-        run: pytest tests/unit -v --cov=src --cov-report=xml -m "not llm and not e2e"
+        run: pytest tests/unit -v --cov=src --cov-report=xml --cov-report=term -m "not llm and not e2e"
       - name: Check core coverage >= 90%
         run: pytest tests/unit -v --cov=src/core --cov-fail-under=90 -m "not llm and not e2e"
+      # Floor, not the CLAUDE.md-mandated 80% target: src/api/routes/*,
+      # src/workers/ingest_worker.py, and most of src/services/llm|vector are
+      # only exercised today by tests/e2e/test_eval_fixture.py, which needs a
+      # live stack (Postgres/Qdrant/Redis + real LLM keys) and is intentionally
+      # excluded here via `-m "not llm and not e2e"`. Current overall is ~54%;
+      # this gate stops it regressing further while route/worker-level tests
+      # (FastAPI TestClient + dependency_overrides, no live infra needed) are
+      # added incrementally to close the gap to 80%.
+      - name: Check overall coverage >= 50% (ratchet toward 80% target)
+        run: pytest tests/unit -v --cov=src --cov-fail-under=50 -m "not llm and not e2e"
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
