@@ -23,6 +23,51 @@ from src.utils.retry import fetch_with_retry
 logger = structlog.get_logger()
 
 
+async def ensure_collections(settings: Any) -> None:
+    """Idempotently create the Qdrant collections this app depends on.
+
+    Must run to completion before anything upserts into these collections.
+    Callable from multiple entry points (API startup, the standalone seed
+    script) since collection_exists()/create_collection() make repeat calls
+    a no-op -- whichever process starts first does the real work.
+    """
+    from qdrant_client import AsyncQdrantClient
+    from qdrant_client.http.models import Distance, SparseVectorParams, VectorParams
+
+    qdrant = AsyncQdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key or None)
+    try:
+        # review_chunks uses named vectors: dense (ANN) + sparse (BM25-style via fastembed)
+        if not await qdrant.collection_exists(settings.qdrant_collection_reviews):
+            await qdrant.create_collection(
+                collection_name=settings.qdrant_collection_reviews,
+                vectors_config={
+                    "dense": VectorParams(size=settings.embedding_dim, distance=Distance.COSINE),
+                },
+                sparse_vectors_config={"sparse": SparseVectorParams()},
+            )
+            logger.info("qdrant_collection_created", collection=settings.qdrant_collection_reviews)
+        else:
+            logger.info("qdrant_collection_exists", collection=settings.qdrant_collection_reviews)
+
+        # correction_embeddings and session_memory use flat dense vectors only
+        for name in [
+            settings.qdrant_collection_corrections,
+            settings.qdrant_collection_session_memory,
+        ]:
+            if not await qdrant.collection_exists(name):
+                await qdrant.create_collection(
+                    collection_name=name,
+                    vectors_config=VectorParams(
+                        size=settings.embedding_dim, distance=Distance.COSINE
+                    ),
+                )
+                logger.info("qdrant_collection_created", collection=name)
+            else:
+                logger.info("qdrant_collection_exists", collection=name)
+    finally:
+        await qdrant.close()
+
+
 class QdrantStore(BaseVectorStore):
     def __init__(self, url: str, api_key: str | None = None) -> None:
         self.client = AsyncQdrantClient(url=url, api_key=api_key or None)
@@ -113,16 +158,21 @@ class QdrantStore(BaseVectorStore):
         qdrant_filter = self._build_filter(filters) if filters else None
 
         async def _call() -> list[SearchResult]:
-            results = await self.client.search(
+            # AsyncQdrantClient has no search() method in the installed
+            # qdrant-client version (search() was replaced by query_points());
+            # confirmed via a live 500 from /chat/correct -- query_points() is
+            # what hybrid_search() above already uses successfully.
+            response = await self.client.query_points(
                 collection_name=collection,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=limit,
                 score_threshold=score_threshold,
                 query_filter=qdrant_filter,
                 with_payload=True,
             )
             return [
-                SearchResult(id=str(r.id), score=r.score, payload=r.payload or {}) for r in results
+                SearchResult(id=str(p.id), score=p.score, payload=p.payload or {})
+                for p in response.points
             ]
 
         return await fetch_with_retry(

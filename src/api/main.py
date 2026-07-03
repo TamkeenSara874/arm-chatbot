@@ -1,4 +1,10 @@
+import asyncio
 from contextlib import asynccontextmanager
+
+try:
+    import sentry_sdk as _sentry_sdk
+except ImportError:
+    _sentry_sdk = None  # type: ignore[assignment]
 
 import structlog
 from fastapi import FastAPI
@@ -13,6 +19,13 @@ from src.utils.logging import configure_logging
 # Configure structured logging before anything else
 _settings = get_settings()
 configure_logging(log_level=_settings.log_level, debug=_settings.debug)
+
+if _sentry_sdk is not None and _settings.sentry_dsn:
+    _sentry_sdk.init(
+        dsn=_settings.sentry_dsn,
+        environment=_settings.app_env,
+        traces_sample_rate=0.1,
+    )
 
 logger = structlog.get_logger()
 
@@ -36,49 +49,28 @@ async def lifespan(app: FastAPI):
         logger.error("database_connection_failed", error=str(exc))
         raise  # fail fast if DB is unreachable at startup
 
-    # Qdrant collections (idempotent create)
+    # Qdrant collections (idempotent create -- shared with scripts/seed.py so
+    # whichever process starts first, API or seed job, creates them)
     try:
-        from qdrant_client import AsyncQdrantClient
-        from qdrant_client.http.models import Distance, SparseVectorParams, VectorParams
+        from src.services.vector.qdrant_store import ensure_collections
 
-        qdrant = AsyncQdrantClient(
-            url=settings.qdrant_url,
-            api_key=settings.qdrant_api_key or None,
-        )
-
-        # review_chunks uses named vectors: dense (ANN) + sparse (BM25-style via fastembed)
-        if not await qdrant.collection_exists(settings.qdrant_collection_reviews):
-            await qdrant.create_collection(
-                collection_name=settings.qdrant_collection_reviews,
-                vectors_config={
-                    "dense": VectorParams(size=settings.embedding_dim, distance=Distance.COSINE),
-                },
-                sparse_vectors_config={"sparse": SparseVectorParams()},
-            )
-            logger.info("qdrant_collection_created", collection=settings.qdrant_collection_reviews)
-        else:
-            logger.info("qdrant_collection_exists", collection=settings.qdrant_collection_reviews)
-
-        # correction_embeddings and session_memory use flat dense vectors only
-        for name in [
-            settings.qdrant_collection_corrections,
-            settings.qdrant_collection_session_memory,
-        ]:
-            if not await qdrant.collection_exists(name):
-                await qdrant.create_collection(
-                    collection_name=name,
-                    vectors_config=VectorParams(
-                        size=settings.embedding_dim, distance=Distance.COSINE
-                    ),
-                )
-                logger.info("qdrant_collection_created", collection=name)
-            else:
-                logger.info("qdrant_collection_exists", collection=name)
-
-        await qdrant.close()
+        await ensure_collections(settings)
     except Exception as exc:
         logger.error("qdrant_init_failed", error=str(exc))
         raise
+
+    # Warm up ML models so the first query doesn't incur 20-30s model-load latency
+    try:
+        from src.core.reranker import load_reranker
+        from src.services.embedding.sparse_embedder import warmup_sparse_embedder
+
+        await asyncio.gather(
+            load_reranker(settings.reranker_model),
+            warmup_sparse_embedder(),
+        )
+        logger.info("models_warmed_up", reranker=settings.reranker_model)
+    except Exception as exc:
+        logger.warning("model_warmup_failed", error=str(exc))
 
     logger.info("startup_complete")
     yield
@@ -121,10 +113,12 @@ def create_app() -> FastAPI:
 
     # Routes
     from src.api.routes import health
+    from src.api.routes.auth import router as auth_router
     from src.api.routes.chat import router as chat_router
     from src.api.routes.ingest import router as ingest_router
 
     app.include_router(health.router)
+    app.include_router(auth_router)
     app.include_router(chat_router)
     app.include_router(ingest_router)
 

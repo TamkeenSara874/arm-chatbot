@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.chunking import chunk_text
@@ -15,10 +17,11 @@ from src.services.cache import RedisCache
 from src.services.database import get_session_factory
 from src.services.embedding.base import BaseEmbedder
 from src.services.embedding.sparse_embedder import compute_sparse_vectors_batch
-from src.services.llm.base import BaseLLMClient
+from src.services.llm.base import BaseLLMClient, UsageCallback
 from src.services.vector.base import BaseVectorStore
 from src.utils.metrics import ingest_reviews_total
 from src.utils.security import flag_injection
+from src.utils.tracing import IngestTrace
 
 logger = structlog.get_logger()
 
@@ -112,10 +115,54 @@ async def _run(
     job.status = "processing"
     await db_session.commit()
 
+    try:
+        await _process_rows(
+            rows=rows,
+            restaurant_id=restaurant_id,
+            settings=settings,
+            db_session=db_session,
+            job=job,
+            embedder=embedder,
+            vector_store=vector_store,
+            reviews_collection=reviews_collection,
+            llm_client=llm_client,
+            cache=cache,
+        )
+    except Exception as exc:
+        logger.error(
+            "ingest_pipeline_failed",
+            job_id=str(job_id),
+            error=str(exc),
+            exc_info=True,
+        )
+        await _fail_job(db_session, job, str(exc))
+        raise
+
+
+async def _process_rows(
+    rows: list[dict[str, Any]],
+    restaurant_id: int,
+    settings: object,
+    db_session: AsyncSession,
+    job: IngestJob,
+    embedder: BaseEmbedder,
+    vector_store: BaseVectorStore,
+    reviews_collection: str,
+    llm_client: BaseLLMClient,
+    cache: RedisCache,
+) -> None:
+    """Chunk, extract entities, embed, and upsert every row. Raises on failure
+
+    so the caller can mark the job failed with a real error message instead of
+    leaving it stuck at status=processing.
+    """
     chunk_size: int = getattr(settings, "chunk_size_tokens", 256)
     overlap: int = getattr(settings, "chunk_overlap_tokens", 32)
     batch_size: int = getattr(settings, "ingest_batch_size", 100)
     entity_batch: int = getattr(settings, "entity_extraction_batch_size", 10)
+    entity_concurrency: int = getattr(settings, "entity_extraction_concurrency", 8)
+
+    trace = IngestTrace(job_id=str(job.id), restaurant_id=restaurant_id)
 
     all_meta: list[ReviewChunkMeta] = []
     all_points: list[dict] = []
@@ -219,20 +266,44 @@ async def _run(
         if (row_idx + 1) % batch_size == 0:
             await db_session.commit()
 
-    # Entity extraction (batched LLM calls)
+    # Entity extraction (batched LLM calls, bounded concurrency).
+    # ~275 batches run one-at-a-time would serialize the whole job behind
+    # sequential network round-trips; a semaphore caps concurrent OpenAI
+    # calls without overwhelming rate limits.
     content_points = [p for p in all_points if p["text"]]
-    for i in range(0, len(content_points), entity_batch):
-        batch = content_points[i : i + entity_batch]
-        entities_per_chunk = await _extract_entities(llm_client, [p["text"] for p in batch])
+    entity_semaphore = asyncio.Semaphore(entity_concurrency)
+    entity_model_name = getattr(llm_client, "model", "unknown")
+
+    async def _extract_batch(batch: list[dict]) -> None:
+        async with entity_semaphore:
+            entities_per_chunk = await _extract_entities(
+                llm_client,
+                [p["text"] for p in batch],
+                usage_callback=lambda p, c: trace.record_entity_tokens(entity_model_name, p, c),
+            )
         for point, entities in zip(batch, entities_per_chunk, strict=True):
             point["food_entities"] = entities
 
+    t_entities = time.perf_counter()
+    await asyncio.gather(
+        *(
+            _extract_batch(content_points[i : i + entity_batch])
+            for i in range(0, len(content_points), entity_batch)
+        )
+    )
+    trace.entity_extraction_ms = (time.perf_counter() - t_entities) * 1000.0
+
     # Embedding and Qdrant upsert (batched) with named dense + sparse vectors
+    embedding_model_name = getattr(embedder, "model", "unknown")
+    t_embed = time.perf_counter()
     for i in range(0, len(all_points), batch_size):
         batch = all_points[i : i + batch_size]
         texts = [p["text"] for p in batch]
         dense_vectors, sparse_vectors = await asyncio.gather(
-            embedder.embed(texts),
+            embedder.embed(
+                texts,
+                usage_callback=lambda t: trace.record_embedding_tokens(embedding_model_name, t),
+            ),
             compute_sparse_vectors_batch(texts),
         )
         qdrant_points = [
@@ -252,9 +323,41 @@ async def _run(
         job.progress_pct = min(progress, 90)
         await db_session.commit()
 
-    # Postgres bulk insert of ReviewChunkMeta
-    for meta in all_meta:
-        db_session.add(meta)
+    # Postgres bulk upsert of ReviewChunkMeta. Uses ON CONFLICT DO UPDATE on the
+    # chunk_id primary key so retrying a job (after a transient failure partway
+    # through) is safe and doesn't collide with rows a prior attempt already
+    # committed -- matching the idempotency Qdrant already gets from
+    # deterministic point IDs.
+    if all_meta:
+        meta_columns = [
+            "chunk_id",
+            "restaurant_id",
+            "review_id",
+            "chunk_text",
+            "full_review",
+            "has_content",
+            "rating",
+            "sentiment_label",
+            "sentiment_rating_agree",
+            "review_date",
+            "username",
+            "source",
+            "chunk_index",
+            "has_injection_attempt",
+            "date_inferred",
+        ]
+        rows = [{col: getattr(meta, col) for col in meta_columns} for meta in all_meta]
+        # Postgres/asyncpg cap query parameters at 32767; with 15 columns per
+        # row that's ~2184 rows max in one statement, so chunk well under
+        # that instead of sending the whole dataset in a single INSERT.
+        for i in range(0, len(rows), batch_size):
+            row_chunk = rows[i : i + batch_size]
+            stmt = pg_insert(ReviewChunkMeta).values(row_chunk)
+            update_cols = {col: stmt.excluded[col] for col in meta_columns if col != "chunk_id"}
+            stmt = stmt.on_conflict_do_update(index_elements=["chunk_id"], set_=update_cols)
+            await db_session.execute(stmt)
+
+    trace.embedding_upsert_ms = (time.perf_counter() - t_embed) * 1000.0
 
     job.total_chunks = len(all_points)
     job.skipped_empty = skipped_empty
@@ -274,12 +377,17 @@ async def _run(
 
     logger.info(
         "ingest_job_complete",
-        job_id=str(job_id),
+        job_id=str(job.id),
         restaurant_id=restaurant_id,
         total_reviews=len(rows),
         total_chunks=len(all_points),
         skipped_empty=skipped_empty,
     )
+
+    trace.total_reviews = len(rows)
+    trace.total_chunks = len(all_points)
+    trace.skipped_empty = skipped_empty
+    trace.emit()
 
 
 def _parse_json(content: bytes) -> list[dict[str, Any]]:
@@ -382,6 +490,7 @@ def _derive_review_id(restaurant_id: int, username: str, created_at_raw: Any, ro
 async def _extract_entities(
     llm_client: BaseLLMClient,
     texts: list[str],
+    usage_callback: UsageCallback | None = None,
 ) -> list[list[str]]:
     """Extract food/menu items from a batch of review texts.
 
@@ -405,6 +514,7 @@ async def _extract_entities(
             system="You extract food and menu item names from restaurant reviews. Output JSON only.",
             temperature=0.0,
             max_tokens=512,
+            usage_callback=usage_callback,
         )
         raw = raw.strip()
         if raw.startswith("```"):

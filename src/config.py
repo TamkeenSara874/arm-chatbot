@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     ingest_batch_size: int = 100
     ingest_max_file_size_mb: int = 10
     entity_extraction_batch_size: int = 10
+    entity_extraction_concurrency: int = 8
 
     # Ranking weights (must sum to 1.0)
     ranking_weight_rrf: float = 0.5
