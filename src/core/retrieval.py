@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import structlog
 
@@ -42,6 +43,7 @@ async def hybrid_retrieve(
 
     ann_limit = max(top_k * 5, 50)
 
+    t0 = time.perf_counter()
     dense_task = asyncio.create_task(embedder.embed_one(query))
     sparse_task = asyncio.create_task(compute_sparse_vector(query))
 
@@ -50,7 +52,9 @@ async def hybrid_retrieve(
     except Exception as exc:
         logger.error("retrieval_embedding_failed", error=str(exc))
         return []
+    embed_ms = (time.perf_counter() - t0) * 1000.0
 
+    t1 = time.perf_counter()
     try:
         results = await vector_store.hybrid_search(
             collection=collection,
@@ -63,8 +67,12 @@ async def hybrid_retrieve(
     except Exception as exc:
         logger.warning("hybrid_search_failed", error=str(exc))
         return []
+    search_ms = (time.perf_counter() - t1) * 1000.0
 
     if not results:
+        logger.info(
+            "retrieval_breakdown", embed_ms=round(embed_ms, 1), search_ms=round(search_ms, 1), rerank_ms=0.0
+        )
         return []
 
     if reranker_model:
@@ -79,6 +87,19 @@ async def hybrid_retrieve(
         # before 30 candidates; capping here keeps latency bounded across
         # all top_k values while still returning the full top_k results.
         candidates = results[: min(top_k * 4, 30)]
-        return await rerank(query, candidates, model_name=reranker_model, top_k=top_k)
+        t2 = time.perf_counter()
+        reranked = await rerank(query, candidates, model_name=reranker_model, top_k=top_k)
+        rerank_ms = (time.perf_counter() - t2) * 1000.0
+        logger.info(
+            "retrieval_breakdown",
+            embed_ms=round(embed_ms, 1),
+            search_ms=round(search_ms, 1),
+            rerank_ms=round(rerank_ms, 1),
+            candidate_count=len(candidates),
+        )
+        return reranked
 
+    logger.info(
+        "retrieval_breakdown", embed_ms=round(embed_ms, 1), search_ms=round(search_ms, 1), rerank_ms=0.0
+    )
     return results[:top_k]

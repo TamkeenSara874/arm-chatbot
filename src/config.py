@@ -24,10 +24,19 @@ class Settings(BaseSettings):
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
-    cache_ttl_seconds: int = 3600
+    # 24h: review data only changes on re-ingestion (not continuously), and
+    # corrections already bust their own cache entry via
+    # RedisCache.invalidate_query(), so a longer TTL is pure cost savings
+    # without a staleness downside.
+    cache_ttl_seconds: int = 86400
 
     # LLM providers
     groq_api_key: str = ""
+    # Optional comma-separated list of additional free-tier Groq keys (each
+    # has its own daily token quota). When set, decomposition rotates across
+    # all of them (groq_api_key + these) instead of falling back to paid
+    # OpenAI the moment a single key's quota is exhausted.
+    groq_api_keys: str = ""
     openai_api_key: str = ""
 
     # Model names — change these env vars to switch models, no code edits needed
@@ -37,8 +46,11 @@ class Settings(BaseSettings):
     openai_complex_model: str = "gpt-4.1"
     openai_embed_model: str = "text-embedding-3-large"
     groq_decomp_model: str = "llama-3.3-70b-versatile"
-    # Cross-encoder reranker (runs locally, no API cost)
-    reranker_model: str = "BAAI/bge-reranker-base"
+    # Cross-encoder reranker (runs locally, no API cost). ms-marco-MiniLM-L-6-v2
+    # (~22M params) over bge-reranker-base (~278M params) -- the larger model
+    # measured at 13-22s of CPU inference for 24-30 candidates in production,
+    # the dominant end-to-end latency cost by a wide margin.
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
     # Embeddings
     embedding_dim: int = 3072
@@ -83,6 +95,19 @@ class Settings(BaseSettings):
     @property
     def allowed_origins_list(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+
+    @property
+    def groq_api_key_list(self) -> list[str]:
+        """groq_api_key plus any additional keys in groq_api_keys, deduplicated, order preserved."""
+        keys = [self.groq_api_key] if self.groq_api_key else []
+        keys += [k.strip() for k in self.groq_api_keys.split(",") if k.strip()]
+        seen: set[str] = set()
+        deduped = []
+        for k in keys:
+            if k not in seen:
+                seen.add(k)
+                deduped.append(k)
+        return deduped
 
     model_config = {"env_file": ".env", "case_sensitive": False, "extra": "ignore"}
 
