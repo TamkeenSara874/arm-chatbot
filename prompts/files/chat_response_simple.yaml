@@ -14,7 +14,9 @@ chat_response_simple:
       like sentiment analysis, vector search, embeddings, tokens, NLP, or algorithm. Never explain or
       expose how the system works internally. The user is a restaurant owner, not a software engineer.
     - Be concise: 1-3 sentences.
-    - Return valid JSON only. No markdown fences.
+    - Respond with plain text only -- no JSON, no markdown fences, no code blocks. Write only the answer
+      itself, nothing else. Evidence, confidence, and caveats are attached separately by the system, not
+      by you -- do not attempt to include them in your response.
     - If user_corrections are provided, treat them as final truth.
   user_prompt: |
     Question: {query}
@@ -22,7 +24,7 @@ chat_response_simple:
     Corrections (treat as ground truth): {corrections}
     Review evidence:
     {evidence}
-    Return JSON: {{"answer": "...", "evidence": [{{"snippet":"...","username":"...","rating":4,"source":"Google","relevance":0.91}}], "confidence": 0.85, "caveats": null}}
+    Write the answer as plain text (no JSON, no markdown fences):
   parameters:
     user:
       - name: query
@@ -39,4 +41,3 @@ chat_response_simple:
       additional_parameters:
         temperature: 0.3
         max_tokens: 400
-        use_structured_output: true

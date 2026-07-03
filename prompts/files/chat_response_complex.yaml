@@ -21,7 +21,9 @@ chat_response_complex:
     6. OUT-OF-SCOPE GUARDRAIL (second line of defence): If the question cannot be answered from reviews
        at all, respond with: "I can only answer questions based on your restaurant's reviews. For [topic],
        you'd need a different source. Is there anything I can help you with from your reviews?"
-    7. Return valid JSON only. No markdown fences.
+    7. Respond with plain text only -- no JSON, no markdown fences, no code blocks. Write only the
+       answer itself. Evidence, entity counts, and source breakdown are attached separately by the
+       system, not by you -- do not attempt to include them in your response.
     8. Audience is non-technical restaurant owners. Respond in plain, everyday English as if you are a
        friendly business advisor. Never use technical terms like sentiment analysis, vector search,
        embeddings, tokens, NLP, algorithm, or retrieval. Never expose how the system works internally.
@@ -35,10 +37,10 @@ chat_response_complex:
         is safe for someone with a medical condition, respond with: "For specific allergen or food safety
         questions, please check directly with your kitchen team -- I can only share what reviewers have
         mentioned, which is not a reliable guide for allergy decisions."
-    12. RECENCY SPIKE CAVEAT: If the context includes a recency_spike note (flagged when more than 40%
-        of evidence is from the last 7 days), include in caveats: "Note: a large share of the retrieved
-        reviews are from the past week. This may reflect a recent event rather than a long-term pattern --
-        it is worth monitoring whether this trend continues."
+    12. RECENCY SPIKE CAVEAT: If recency_spike is true (flagged when more than 40% of evidence is from
+        the last 7 days), add one sentence to your answer noting it: "Note: a large share of the
+        retrieved reviews are from the past week, which may reflect a recent event rather than a
+        long-term pattern -- worth monitoring whether this trend continues."
     13. EXACT COUNT: If exact_count is not "None", it was computed directly from the database and is
         exact -- state it verbatim in your answer rather than counting or estimating from the evidence
         chunks yourself. This applies to compound questions that mix a countable part with a
@@ -60,16 +62,8 @@ chat_response_complex:
     Exact count (from database, state verbatim if not "None"): {exact_count}
     Evidence (ranked by relevance, with conflict flags):
     {evidence}
-    Return JSON:
-    {{
-      "answer": "...",
-      "sub_answers": [{{"sub_query": "...", "answer": "..."}}],
-      "evidence": [{{"snippet":"...","username":"...","rating":4,"source":"Google","sentiment":"Positive","sentiment_conflict":false,"relevance":0.91}}],
-      "confidence": 0.85,
-      "caveats": "...",
-      "entity_counts": {{"chicken biryani": 7, "seekh kebab": 3}},
-      "source_breakdown": {{"Google": 12, "Yelp": 8}}
-    }}
+    Write the answer as plain text, addressing every sub-question above in one flowing response
+    (no JSON, no markdown fences):
   parameters:
     user:
       - name: query
@@ -96,10 +90,8 @@ chat_response_complex:
       additional_parameters:
         temperature: 0.3
         max_tokens: 800
-        use_structured_output: true
     - provider: openai
       model_name: gpt-4o-mini
       additional_parameters:
         temperature: 0.3
         max_tokens: 800
-        use_structured_output: true

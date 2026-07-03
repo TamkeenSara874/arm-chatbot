@@ -610,28 +610,30 @@ async def _pipeline_stream(
             trace.generation_ms = (time.perf_counter() - t_gen) * 1000.0
             trace.generation_model = model_used
 
-        # The simple/complex prompts instruct the model to return a JSON
-        # object ({"answer": ..., "sub_answers": [...], ...}), but streaming
-        # concatenates raw tokens -- full_answer is that JSON text verbatim,
-        # not the extracted answer. Parse it back out here; previously this
-        # was skipped entirely, so every response showed the raw JSON blob
-        # (braces, "answer": key, etc.) as the visible answer text. The
-        # no_evidence_gate branch's full_answer is already plain text, not
-        # JSON, so a parse failure there is expected and falls back to the
-        # raw string unchanged.
-        answer_text = full_answer
+        # The simple/complex prompts now instruct the model to respond with
+        # plain text directly (previously they asked for a JSON envelope,
+        # which both broke token-by-token streaming -- the raw JSON was
+        # visible mid-stream -- and was pure overhead, since evidence/
+        # confidence/caveats/entity_counts/source_breakdown all come from
+        # `ranked`, computed server-side, never from the model's output).
+        # This is a defensive cleanup only, for the rare case a model ignores
+        # the plain-text instruction and wraps its reply in a fence or JSON.
+        answer_text = full_answer.strip()
+        if answer_text.startswith("```"):
+            lines = answer_text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            answer_text = "\n".join(lines).strip()
         sub_answers: list[SubAnswer] = []
-        try:
-            parsed = json.loads(full_answer)
-            if isinstance(parsed, dict):
-                answer_text = str(parsed.get("answer", full_answer))
-                sub_answers = [
-                    SubAnswer(sub_query=str(sa.get("sub_query", "")), answer=str(sa.get("answer", "")))
-                    for sa in parsed.get("sub_answers", [])
-                    if isinstance(sa, dict)
-                ]
-        except (json.JSONDecodeError, TypeError):
-            pass
+        if answer_text.startswith("{"):
+            try:
+                parsed = json.loads(answer_text)
+                if isinstance(parsed, dict) and "answer" in parsed:
+                    answer_text = str(parsed["answer"])
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         # Groundedness heuristic: does the answer state a review/mention count
         # higher than what was actually retrieved? Cheap code-only check (no
