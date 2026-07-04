@@ -136,7 +136,11 @@ ruff check src tests
 # Tests
 pytest --cov=src -v
 
-# Seed data for restaurant_id=1 and 2
+# Seed data for restaurant_id=1 (the only restaurant seeded by default --
+# scripts/seed.py ingests dataset/dataset.json for RESTAURANT_ID=1 only).
+# The multi-tenancy selector still works and enforces real isolation, but
+# demoing it against a second populated tenant requires a second dataset
+# ingested manually via POST /api/v1/ingest with restaurant_id=2.
 python scripts/seed.py
 
 # Evaluate retrieval quality (P@5, Recall@5, MRR)
