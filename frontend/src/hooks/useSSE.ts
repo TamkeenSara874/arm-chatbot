@@ -1,7 +1,7 @@
 import { useCallback, useRef } from 'react';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { useChatStore } from '../store/chatStore';
-import { getApiKey } from '../services/api';
+import { AuthExpiredError, getRequiredJwt, resetToLogin } from '../services/api';
 import type { ChatQueryRequest, ChatQueryResponse } from '../types/api';
 
 const BASE = import.meta.env.VITE_API_URL ?? '';
@@ -33,11 +33,30 @@ export function useSSE() {
     // issues when send()/regenerate() is held across re-renders.
     const s = () => useChatStore.getState();
 
+    // getRequiredJwt() never falls back to the shared static API key -- this
+    // endpoint only accepts a real restaurant JWT, so a missing token can
+    // never succeed here anyway. Failing fast (and resetting to the login
+    // screen) beats silently sending a token the backend will just 401.
+    let token: string;
+    try {
+      token = getRequiredJwt();
+    } catch (err) {
+      s().setMessageError(
+        assistantMsgId,
+        err instanceof Error ? err.message : 'Please select your restaurant again.'
+      );
+      return;
+    }
+
     const controller = new AbortController();
     abortRef.current = controller;
     assistantMsgIdRef.current = assistantMsgId;
 
     const handleOpen = async (res: Response): Promise<void> => {
+      if (res.status === 401) {
+        resetToLogin();
+        throw new AuthExpiredError();
+      }
       if (!res.ok) {
         const text = await res.text().catch(() => String(res.status));
         if (res.status === 503) {
@@ -49,7 +68,7 @@ export function useSSE() {
 
     const handleMessage = (ev: SseMessage): void => {
       if (ev.event === 'token') {
-        s().appendToken(ev.data);
+        s().appendToken(assistantMsgId, ev.data);
       } else if (ev.event === 'done') {
         const response = JSON.parse(ev.data) as ChatQueryResponse;
         s().finalizeMessage(assistantMsgId, response);
@@ -78,7 +97,7 @@ export function useSSE() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${getApiKey()}`,
+          Authorization: `Bearer ${token}`,
           Accept: 'text/event-stream',
         },
         body: JSON.stringify(request),

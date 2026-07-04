@@ -32,7 +32,6 @@ interface ChatStore {
   restaurantId: number | null;
   sessionId: string | null;
   messages: LocalMessage[];
-  streamingToken: string;
   isStreaming: boolean;
   selectedMessageId: string | null;
 
@@ -40,7 +39,7 @@ interface ChatStore {
   setSessionId: (id: string | null) => void;
   addUserMessage: (id: string, content: string) => void;
   startStreaming: (id: string) => void;
-  appendToken: (token: string) => void;
+  appendToken: (id: string, token: string) => void;
   finalizeMessage: (id: string, response: ChatQueryResponse) => void;
   cancelStreaming: (id: string) => void;
   setMessageError: (id: string, error: string) => void;
@@ -56,13 +55,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   restaurantId: _r,
   sessionId: _s,
   messages: [],
-  streamingToken: '',
   isStreaming: false,
   selectedMessageId: null,
 
   setRestaurantId: (id) => {
     saveSession(id, null);
-    set({ restaurantId: id, sessionId: null, messages: [], streamingToken: '', selectedMessageId: null });
+    set({ restaurantId: id, sessionId: null, messages: [], selectedMessageId: null });
   },
 
   setSessionId: (id) => {
@@ -76,25 +74,22 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   startStreaming: (id) =>
     set((s) => ({
       isStreaming: true,
-      streamingToken: '',
       messages: [...s.messages, { id, role: 'assistant', content: '', isStreaming: true }],
     })),
 
-  appendToken: (token) =>
-    set((s) => {
-      const next = s.streamingToken + token;
-      return {
-        streamingToken: next,
-        messages: s.messages.map((m) =>
-          m.isStreaming ? { ...m, content: next } : m
-        ),
-      };
-    }),
+  // Matches by the specific message id (not the isStreaming flag) so tokens
+  // from a stale/orphaned stream -- e.g. one left running after a restaurant
+  // switch -- can never land on a different message than the one they belong to.
+  appendToken: (id, token) =>
+    set((s) => ({
+      messages: s.messages.map((m) =>
+        m.id === id ? { ...m, content: m.content + token } : m
+      ),
+    })),
 
   finalizeMessage: (id, response) =>
     set((s) => ({
       isStreaming: false,
-      streamingToken: '',
       messages: s.messages.map((m) =>
         m.id === id
           ? { ...m, content: response.response.answer, response, isStreaming: false }
@@ -105,11 +100,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   cancelStreaming: (id) =>
     set((s) => {
       const target = s.messages.find((m) => m.id === id);
-      if (!target) return { isStreaming: false, streamingToken: '' };
+      if (!target) return { isStreaming: false };
       const hasContent = Boolean(target.content?.trim());
       return {
         isStreaming: false,
-        streamingToken: '',
         messages: hasContent
           ? s.messages.map((m) => (m.id === id ? { ...m, isStreaming: false } : m))
           : s.messages.filter((m) => m.id !== id),
@@ -119,7 +113,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   setMessageError: (id, error) =>
     set((s) => ({
       isStreaming: false,
-      streamingToken: '',
       messages: s.messages.map((m) =>
         m.id === id ? { ...m, error, isStreaming: false, content: m.content || '' } : m
       ),
@@ -134,6 +127,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   newConversation: () => {
     saveSession(get().restaurantId, null);
-    set({ sessionId: null, messages: [], streamingToken: '', isStreaming: false, selectedMessageId: null });
+    set({ sessionId: null, messages: [], isStreaming: false, selectedMessageId: null });
   },
 }));

@@ -78,6 +78,14 @@ export function ChatWindow() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Cancels any in-flight stream when the restaurant changes (cleanup runs
+  // before the effect re-fires) and on unmount. Without this, switching
+  // restaurants mid-stream left the old fetchEventSource request running in
+  // the background with no client-side way to stop it.
+  useEffect(() => {
+    return () => cancel();
+  }, [restaurantId, cancel]);
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const text = input.trim();
