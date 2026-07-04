@@ -27,6 +27,7 @@ export function ReportView({ onClose }: ReportViewProps) {
   async function handleDownloadPdf() {
     if (!data?.report.markdown || !contentRef.current) return;
     setIsExporting(true);
+    let clone: HTMLElement | null = null;
     try {
       const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
         import('html2canvas'),
@@ -34,7 +35,7 @@ export function ReportView({ onClose }: ReportViewProps) {
       ]);
 
       // Clone into a detached, full-height div so html2canvas captures everything
-      const clone = contentRef.current.cloneNode(true) as HTMLElement;
+      clone = contentRef.current.cloneNode(true) as HTMLElement;
       clone.style.cssText =
         'position:absolute;top:-99999px;left:-99999px;width:750px;padding:32px;background:#fff;';
       document.body.appendChild(clone);
@@ -44,25 +45,28 @@ export function ReportView({ onClose }: ReportViewProps) {
         backgroundColor: '#ffffff',
         useCORS: true,
       });
-      document.body.removeChild(clone);
 
       const pdf = new jsPDF({ orientation: 'p', unit: 'pt', format: 'a4' });
       const pdfW = pdf.internal.pageSize.getWidth();
       const pdfH = pdf.internal.pageSize.getHeight();
       const ratio = pdfW / canvas.width;
       const totalH = canvas.height * ratio;
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
 
       let pageY = 0;
       let page = 0;
       while (pageY < totalH) {
         if (page > 0) pdf.addPage();
-        pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, -pageY, pdfW, totalH);
+        pdf.addImage(imgData, 'JPEG', 0, -pageY, pdfW, totalH);
         pageY += pdfH;
         page++;
       }
 
       pdf.save(`review-insights-restaurant-${restaurantId}.pdf`);
     } finally {
+      if (clone?.parentNode) {
+        document.body.removeChild(clone);
+      }
       setIsExporting(false);
     }
   }
