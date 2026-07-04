@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, stat
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy import distinct, select
+from sqlalchemy.exc import IntegrityError
 
 from src.api.dependencies import (
     AuthToken,
@@ -84,7 +85,18 @@ async def ingest_reviews(
         status="pending",
     )
     db.add(job)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # ix_ingest_job_one_active_per_restaurant (partial unique index on
+        # restaurant_id WHERE status IN ('pending','processing')) is the
+        # single source of truth here -- a pre-check SELECT would have a
+        # TOCTOU race under concurrent requests, the DB constraint doesn't.
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An ingest job is already pending or processing for this restaurant",
+        ) from exc
     await db.refresh(job)
 
     logger.info(
