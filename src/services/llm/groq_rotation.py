@@ -4,12 +4,15 @@ import asyncio
 import re
 import time
 from collections.abc import AsyncIterator
+from typing import Any
 
 import structlog
 from groq import AsyncGroq, RateLimitError
 
 from src.services.llm.base import AllModelsFailedError, BaseLLMClient, BaseModelT, UsageCallback
+from src.utils.circuit_breaker import AsyncCircuitBreaker, CircuitBreakerError
 from src.utils.metrics import llm_request_latency, llm_request_total
+from src.utils.retry import fetch_with_retry
 
 logger = structlog.get_logger()
 
@@ -54,6 +57,13 @@ class RotatingGroqClient(BaseLLMClient):
         self._index = 0
         self._cooldown_until: dict[int, float] = {}
         self._lock = asyncio.Lock()
+        # One breaker per key, not a shared breaker -- a single bad/exhausted
+        # key tripping a shared breaker would incorrectly block every other
+        # (healthy) key too, defeating the entire point of holding N
+        # independent quotas.
+        self._breakers = [
+            AsyncCircuitBreaker(f"groq_key_{i}") for i in range(len(api_keys))
+        ]
 
     def _is_available(self, idx: int) -> bool:
         return self._cooldown_until.get(idx, 0.0) <= time.monotonic()
@@ -86,10 +96,19 @@ class RotatingGroqClient(BaseLLMClient):
             if acquired is None:
                 break
             idx, client = acquired
+            breaker = self._breakers[idx]
             attempts += 1
             start = time.perf_counter()
             try:
-                result = await call_fn(client)
+
+                async def _call(_breaker=breaker, _client=client) -> Any:
+                    return await _breaker.call_async(call_fn, _client)
+
+                result = await fetch_with_retry(
+                    _call,
+                    label=f"{label}:key{idx}",
+                    dont_retry=(RateLimitError, CircuitBreakerError),
+                )
                 llm_request_total.labels(
                     provider="groq", model=self.model, intent=label
                 ).inc()
@@ -98,12 +117,26 @@ class RotatingGroqClient(BaseLLMClient):
                 self._mark_rate_limited(idx, exc)
                 last_exc = exc
                 continue
+            except CircuitBreakerError as exc:
+                # Treat like a rate limit for rotation purposes: cool this key
+                # down and move on, rather than retrying a breaker that will
+                # reject every attempt instantly anyway.
+                self._cooldown_until[idx] = time.monotonic() + _DEFAULT_COOLDOWN_SECONDS
+                logger.warning("groq_key_circuit_open", key_index=idx, keys_total=len(self._clients))
+                last_exc = exc
+                continue
+            except Exception as exc:
+                # Any other error survived fetch_with_retry's retries on this
+                # key -- still try the remaining keys before giving up
+                # entirely, matching the existing "try every key" semantics.
+                last_exc = exc
+                continue
             finally:
                 llm_request_latency.labels(provider="groq", model=self.model).observe(
                     time.perf_counter() - start
                 )
         raise AllModelsFailedError(
-            f"All {len(self._clients)} Groq API keys are rate-limited"
+            f"All {len(self._clients)} Groq API keys are unavailable"
         ) from last_exc
 
     async def complete(

@@ -14,15 +14,23 @@ async def fetch_with_retry(
     max_attempts: int = 3,
     backoff_base: float = 1.5,
     label: str = "unknown",
+    dont_retry: tuple[type[BaseException], ...] = (),
 ) -> T:
     """Retry a coroutine with exponential backoff.
 
     Works alongside circuit breakers: retry handles transient failures (429s,
     brief network blips); the circuit breaker handles sustained degradation.
+
+    dont_retry lets a caller exempt exception types that a blind retry would
+    just waste time on -- e.g. a rate-limit error that already tells you the
+    quota resets in minutes, not seconds, or a circuit breaker that's already
+    open and will reject every attempt instantly anyway.
     """
     for attempt in range(max_attempts):
         try:
             return await coro_factory()
+        except dont_retry:
+            raise
         except Exception as exc:
             if attempt == max_attempts - 1:
                 logger.error(
