@@ -138,6 +138,14 @@ class CorrectionResponse(BaseModel):
     is_consensus: bool
 
 
+class FeedbackRequest(BaseModel):
+    message_id: uuid.UUID
+
+
+class FeedbackResponse(BaseModel):
+    ok: bool
+
+
 class IngestJobResponse(BaseModel):
     job_id: uuid.UUID
     status: str

@@ -65,6 +65,7 @@ class ChatMessage(Base):
     retrieved_chunk_ids: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     model_used: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    feedback: Mapped[str | None] = mapped_column(String(10), nullable=True)  # "up" | "down"
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     session: Mapped["ChatSession"] = relationship("ChatSession", back_populates="messages")

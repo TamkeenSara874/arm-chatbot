@@ -7,11 +7,19 @@ import type {
   RestaurantListResponse,
   SessionResponse,
 } from '../types/api';
+import { useChatStore } from '../store/chatStore';
 
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
 const API_KEY = (import.meta.env.VITE_API_KEY as string | undefined) ?? 'change-me-local-dev-key';
 
 const JWT_KEY = 'arm-chatbot-jwt';
+
+export class AuthExpiredError extends Error {
+  constructor(message = 'Your session has expired. Please select your restaurant again.') {
+    super(message);
+    this.name = 'AuthExpiredError';
+  }
+}
 
 export function getStoredJwt(): string | null {
   return localStorage.getItem(JWT_KEY);
@@ -25,12 +33,25 @@ export function clearJwt(): void {
   localStorage.removeItem(JWT_KEY);
 }
 
+// Clearing the JWT and dropping restaurantId forces App's WelcomeScreen/
+// RestaurantSelector back into view -- the same reset handleLogout() already
+// does -- so an expired/missing token always routes the user back through a
+// real login instead of silently continuing under the wrong credentials.
+export function resetToLogin(): void {
+  clearJwt();
+  useChatStore.getState().setRestaurantId(null);
+}
+
 function authHeaders(useJwt = false): Record<string, string> {
-  const token = useJwt ? (getStoredJwt() ?? API_KEY) : API_KEY;
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${token}`,
-  };
+  if (useJwt) {
+    const token = getStoredJwt();
+    if (!token) {
+      resetToLogin();
+      throw new AuthExpiredError();
+    }
+    return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+  }
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY}` };
 }
 
 async function request<T>(path: string, init: RequestInit = {}, useJwt = false): Promise<T> {
@@ -38,6 +59,10 @@ async function request<T>(path: string, init: RequestInit = {}, useJwt = false):
     ...init,
     headers: { ...authHeaders(useJwt), ...(init.headers as Record<string, string> | undefined) },
   });
+  if (res.status === 401 && useJwt) {
+    resetToLogin();
+    throw new AuthExpiredError();
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`${res.status}: ${body}`);
@@ -45,7 +70,18 @@ async function request<T>(path: string, init: RequestInit = {}, useJwt = false):
   return res.json() as Promise<T>;
 }
 
-export const getApiKey = (): string => getStoredJwt() ?? API_KEY;
+/** Returns the restaurant JWT or throws AuthExpiredError -- never falls back
+ * to the shared static API key, which the JWT-only chat endpoints reject
+ * anyway (a silent fallback here previously meant a missing/expired token
+ * failed with a generic 401 instead of a clear "log in again" signal). */
+export function getRequiredJwt(): string {
+  const token = getStoredJwt();
+  if (!token) {
+    resetToLogin();
+    throw new AuthExpiredError();
+  }
+  return token;
+}
 
 export const api = {
   getRestaurants: () => request<RestaurantListResponse>('/api/v1/restaurants'),
@@ -65,9 +101,14 @@ export const api = {
       true,
     ),
 
-  getHistory: (sessionId: string, page = 1) =>
+  // The backend route takes limit/offset, not page -- a `page` param was
+  // silently ignored, so every reload always returned the same oldest-20
+  // messages regardless of how long the session was. Requesting a limit
+  // large enough to cover realistic sessions returns the full history in
+  // one round trip without needing offset math or a backend contract change.
+  getHistory: (sessionId: string, limit = 200) =>
     request<ChatMessage[]>(
-      `/api/v1/chat/sessions/${sessionId}/history?page=${page}`,
+      `/api/v1/chat/sessions/${sessionId}/history?limit=${limit}`,
       {},
       true,
     ),
@@ -76,6 +117,13 @@ export const api = {
     request<{ ok: boolean }>(
       '/api/v1/chat/correct',
       { method: 'POST', body: JSON.stringify(body) },
+      true,
+    ),
+
+  submitFeedback: (messageId: string) =>
+    request<{ ok: boolean }>(
+      `/api/v1/chat/${messageId}/feedback`,
+      { method: 'POST', body: JSON.stringify({ message_id: messageId }) },
       true,
     ),
 
