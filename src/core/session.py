@@ -58,6 +58,33 @@ async def store_session_turn(
         )
 
 
+async def build_recent_turns_context(
+    session_id: uuid.UUID,
+    db_session: AsyncSession,
+    recent_k: int = 2,
+) -> str:
+    """Build a cheap "last N turns" string for pronoun resolution at decomposition time.
+
+    Unlike build_session_context, this skips the Qdrant ANN lookup and token-budget
+    trimming -- decomposition only needs immediate continuity (e.g. resolving "that"
+    or "it"), not the full context window used for answer generation.
+    """
+    stmt = (
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(recent_k * 2)
+    )
+    result = await db_session.execute(stmt)
+    recent_messages = list(reversed(result.scalars().all()))
+
+    if not recent_messages:
+        return ""
+
+    lines = [f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}" for m in recent_messages]
+    return "\n".join(lines)
+
+
 async def build_session_context(
     session_id: uuid.UUID,
     current_query: str,

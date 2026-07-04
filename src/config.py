@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     qdrant_collection_reviews: str = "review_chunks"
     qdrant_collection_corrections: str = "correction_embeddings"
     qdrant_collection_session_memory: str = "session_memory"
+    qdrant_collection_chat_cache: str = "chat_cache"
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -83,6 +84,13 @@ class Settings(BaseSettings):
 
     # Correction
     correction_sim_threshold: float = 0.85
+
+    # Semantic cache: cosine similarity a paraphrased query must clear against
+    # a previously-cached (decomposed, rephrased) query before the cached
+    # response is reused. Kept high -- a false positive here silently serves
+    # the wrong answer with no error signal, unlike a retrieval false positive
+    # which just adds one irrelevant evidence chunk among several.
+    semantic_cache_similarity_threshold: float = 0.95
 
     # Evidence quality
     data_staleness_days: int = 365

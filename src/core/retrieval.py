@@ -24,12 +24,17 @@ async def hybrid_retrieve(
     rating_min: float | None = None,
     rating_max: float | None = None,
     reranker_model: str | None = None,
+    precomputed_dense_vector: list[float] | None = None,
 ) -> list[SearchResult]:
     """Hybrid retrieval using Qdrant native dense + sparse RRF.
 
     Dense and sparse vectors are computed concurrently, then passed to Qdrant's
     query_points endpoint which fuses them server-side with Reciprocal Rank Fusion.
     This is multi-worker safe -- there is no in-process state.
+
+    precomputed_dense_vector lets a caller that already embedded this exact
+    query text (e.g. a semantic cache lookup that just missed) skip a second,
+    redundant embedding call.
     """
     filters: dict = {"restaurant_id": restaurant_id}
     if date_from is not None:
@@ -44,11 +49,15 @@ async def hybrid_retrieve(
     ann_limit = max(top_k * 5, 50)
 
     t0 = time.perf_counter()
-    dense_task = asyncio.create_task(embedder.embed_one(query))
     sparse_task = asyncio.create_task(compute_sparse_vector(query))
 
     try:
-        dense_vector, sparse_vec = await asyncio.gather(dense_task, sparse_task)
+        if precomputed_dense_vector is not None:
+            dense_vector = precomputed_dense_vector
+            sparse_vec = await sparse_task
+        else:
+            dense_task = asyncio.create_task(embedder.embed_one(query))
+            dense_vector, sparse_vec = await asyncio.gather(dense_task, sparse_task)
     except Exception as exc:
         logger.error("retrieval_embedding_failed", error=str(exc))
         return []

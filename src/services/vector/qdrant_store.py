@@ -49,10 +49,11 @@ async def ensure_collections(settings: Any) -> None:
         else:
             logger.info("qdrant_collection_exists", collection=settings.qdrant_collection_reviews)
 
-        # correction_embeddings and session_memory use flat dense vectors only
+        # correction_embeddings, session_memory, and chat_cache use flat dense vectors only
         for name in [
             settings.qdrant_collection_corrections,
             settings.qdrant_collection_session_memory,
+            settings.qdrant_collection_chat_cache,
         ]:
             if not await qdrant.collection_exists(name):
                 await qdrant.create_collection(

@@ -9,8 +9,20 @@ from src.core.decomposition import decompose_query
 
 
 def _make_client(responses: list[str]) -> MagicMock:
+    """Mimics a real client's complete_structured(): validates each raw response
+    against the given schema in turn, letting ValidationError surface on bad JSON
+    exactly like GroqClient/OpenAIClient do, so decompose_query()'s retry logic
+    is exercised the same way it is in production.
+    """
     client = MagicMock()
-    client.complete = AsyncMock(side_effect=responses)
+    call_index = {"i": 0}
+
+    async def _complete_structured(prompt, system, response_format, **kwargs):
+        raw = responses[call_index["i"]]
+        call_index["i"] += 1
+        return response_format.model_validate_json(raw)
+
+    client.complete_structured = AsyncMock(side_effect=_complete_structured)
     return client
 
 
@@ -47,7 +59,7 @@ async def test_invalid_json_retries_and_succeeds() -> None:
     client = _make_client([invalid, valid])
     result = await decompose_query(client, "How can I improve?", system="...")
     assert result.intent == "improvement"
-    assert client.complete.call_count == 2
+    assert client.complete_structured.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -86,5 +98,5 @@ async def test_markdown_fenced_json_fails_and_retries() -> None:
 async def test_decompose_passes_temperature_zero() -> None:
     client = _make_client([_valid_json()])
     await decompose_query(client, "test", system="sys")
-    _, kwargs = client.complete.call_args
+    _, kwargs = client.complete_structured.call_args
     assert kwargs.get("temperature") == 0.0

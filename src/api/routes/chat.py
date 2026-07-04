@@ -42,10 +42,12 @@ from src.core.correction import find_correction, store_correction
 from src.core.decomposition import decompose_query
 from src.core.groundedness import check_count_groundedness
 from src.core.guardrail import check_guardrail
-from src.core.ranking import rank_results, reciprocal_rank_fusion
+from src.core.ranking import rank_results
 from src.core.report import generate_report
 from src.core.retrieval import hybrid_retrieve
+from src.core.semantic_cache import find_cached_response, store_cached_response
 from src.core.session import (
+    build_recent_turns_context,
     build_session_context,
     maybe_trigger_summary,
     store_session_turn,
@@ -57,6 +59,8 @@ from src.models.schemas import (
     CorrectionRequest,
     CorrectionResponse,
     EvidenceItem,
+    FeedbackRequest,
+    FeedbackResponse,
     MessageResponse,
     ReportRequest,
     ReportResponse,
@@ -144,9 +148,10 @@ async def chat_query(
     # all -- computing one here would silently waste an API call on every
     # out-of-scope question. hybrid_retrieve() embeds the right query text
     # itself once decomposition has run.
+    recent_turns = await build_recent_turns_context(body.session_id, db)
     loader = get_prompt_loader()
     decomp_system, decomp_user = loader.format(
-        "query_decomposition", query=sanitized, session_context=""
+        "query_decomposition", query=sanitized, session_context=recent_turns
     )
     t_decomp = time.perf_counter()
     decomposed = await decompose_query(
@@ -198,6 +203,28 @@ async def chat_query(
         count = await _compute_count(db, restaurant_id, decomposed)
         precomputed_count = _format_count_answer(count, decomposed)
 
+    # Semantic cache check. Uses the decomposed/rephrased query (context- and
+    # pronoun-resolved, more canonical than the raw message) so a paraphrase
+    # of an earlier question can still hit -- exact-text caching alone would
+    # miss "what about the pasta?" vs. "how was the pasta?" even though
+    # they resolve to the same retrieval query. This only guards the
+    # expensive retrieval+generation path below, not the guardrail/count_query
+    # fast paths above, which are already cheap.
+    retrieval_query = decomposed.rephrased_query.strip() or sanitized
+    cached_semantic, cache_query_vector = await find_cached_response(
+        retrieval_query,
+        restaurant_id,
+        embedder,
+        vector_store,
+        cache,
+        settings.qdrant_collection_chat_cache,
+        threshold=settings.semantic_cache_similarity_threshold,
+    )
+    if cached_semantic:
+        trace.cache_hit = True
+        trace.emit()
+        return EventSourceResponse(_yield_cached(cached_semantic, body.session_id))
+
     # Full pipeline inside the SSE generator
     return EventSourceResponse(
         _pipeline_stream(
@@ -205,6 +232,8 @@ async def chat_query(
             restaurant_id=restaurant_id,
             sanitized=sanitized,
             decomposed=decomposed,
+            retrieval_query=retrieval_query,
+            precomputed_query_vector=cache_query_vector or None,
             precomputed_count=precomputed_count,
             db=db,
             simple_client=simple_client,
@@ -284,6 +313,53 @@ async def get_session_history(
     ]
 
 
+@router.post("/{message_id}/feedback", response_model=FeedbackResponse)
+@limiter.limit(settings.rate_limit_correct)
+async def submit_feedback(
+    request: Request,
+    message_id: uuid.UUID,
+    body: FeedbackRequest,
+    restaurant_id: RestaurantId,
+    db: DbSession,
+) -> FeedbackResponse:
+    """Record a thumbs-up on an assistant message. Never overrides evidence --
+    purely a positive-feedback signal, unlike /correct which stores a real
+    corrected answer.
+
+    message_id here is the *user* message id (same convention /correct uses,
+    and the same id the frontend has via response.message_id) -- the
+    assistant's own row gets a separate, never-returned id, so the paired
+    assistant response is located the same way /correct locates it.
+    """
+    if message_id != body.message_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="message_id mismatch")
+
+    user_msg = await db.get(ChatMessage, message_id)
+    if user_msg is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+
+    session = await db.get(ChatSession, user_msg.session_id)
+    if session is None or session.restaurant_id != restaurant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+
+    stmt = (
+        select(ChatMessage)
+        .where(ChatMessage.session_id == user_msg.session_id)
+        .where(ChatMessage.role == "assistant")
+        .where(ChatMessage.created_at >= user_msg.created_at)
+        .order_by(ChatMessage.created_at.asc())
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    assistant_msg = result.scalar_one_or_none()
+    if assistant_msg is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+
+    assistant_msg.feedback = "up"
+    await db.commit()
+    return FeedbackResponse(ok=True)
+
+
 @router.post("/correct", response_model=CorrectionResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit(settings.rate_limit_correct)
 async def submit_correction(
@@ -331,9 +407,10 @@ async def submit_correction(
     # find_correction()'s intent cross-check silently rejected almost every
     # correction -- confirmed live via the eval harness (correction stored
     # and embedded correctly, but never surfaced on re-ask).
+    recent_turns = await build_recent_turns_context(user_msg.session_id, db)
     loader = get_prompt_loader()
     decomp_system, decomp_user = loader.format(
-        "query_decomposition", query=user_msg.content, session_context=""
+        "query_decomposition", query=user_msg.content, session_context=recent_turns
     )
     decomposed = await decompose_query(decomp_client, decomp_user, decomp_system)
 
@@ -436,6 +513,7 @@ async def _pipeline_stream(
     restaurant_id: int,
     sanitized: str,
     decomposed,
+    retrieval_query: str,
     db: AsyncSession,
     simple_client: BaseLLMClient,
     complex_client: BaseLLMClient,
@@ -445,19 +523,17 @@ async def _pipeline_stream(
     cache: RedisCache,
     trace: RequestTrace,
     precomputed_count: str | None = None,
+    precomputed_query_vector: list[float] | None = None,
 ) -> AsyncGenerator[dict, None]:
     settings_ = get_settings()
     message_id = uuid.uuid4()
     full_answer = ""
 
     try:
-        # Retrieval. Use the decomposition's rewritten/expanded query when
-        # available (pronoun resolution, vague-query expansion) instead of
-        # the raw user text -- previously rephrased_query was computed and
-        # discarded, so "what about the pasta?" never actually got resolved
-        # before hitting the vector store.
-        retrieval_query = decomposed.rephrased_query.strip() or sanitized
-
+        # retrieval_query is passed in from chat_query() -- it's the same
+        # text the semantic cache check above already embedded, so
+        # precomputed_query_vector (if present) can be reused here instead
+        # of embedding it a second time.
         is_aggregation = decomposed.needs_aggregation
         top_k = 20 if is_aggregation else 6
 
@@ -498,14 +574,19 @@ async def _pipeline_stream(
             rating_min=rating_min,
             rating_max=rating_max,
             reranker_model=settings_.reranker_model,
+            precomputed_dense_vector=precomputed_query_vector,
         )
         trace.retrieval_ms = (time.perf_counter() - t0) * 1000.0
 
-        # Ranking
+        # Ranking. results already carry the reranker's sigmoid relevance
+        # score (src/core/reranker.py) -- do NOT re-run reciprocal_rank_fusion
+        # here. hybrid_retrieve() already fuses dense+sparse server-side via
+        # Qdrant-native RRF; calling reciprocal_rank_fusion([results]) on the
+        # single already-reranked list was not a real fusion, it just
+        # replaced the reranker's meaningful score with 1/(60+rank) (~0.01-0.03
+        # for every result), which is what made EvidencePanel's "match %"
+        # badge and _estimate_confidence()'s avg_relevance both useless.
         t1 = time.perf_counter()
-        rrf_scores = reciprocal_rank_fusion([results])
-        for r in results:
-            r.score = rrf_scores.get(r.id, r.score)
         ranked = rank_results(
             results,
             settings_,
@@ -690,6 +771,8 @@ async def _pipeline_stream(
                 restaurant_id=restaurant_id,
                 summary_client=summary_client,
                 summary_trigger=settings_.session_summary_trigger,
+                retrieval_query=retrieval_query,
+                precomputed_query_vector=precomputed_query_vector,
             ),
             name=f"post-response-{message_id}",
         )
@@ -729,6 +812,8 @@ async def _post_response_tasks(
     restaurant_id: int,
     summary_client: BaseLLMClient,
     summary_trigger: int,
+    retrieval_query: str,
+    precomputed_query_vector: list[float] | None = None,
 ) -> None:
     """Persist messages, update session memory, write cache.
 
@@ -798,19 +883,32 @@ async def _post_response_tasks(
             # a hardcoded guess -- previously every cache hit claimed
             # complexity="simple" even if a "complex" gpt-4.1 call produced
             # it, which is misleading for cost/observability.
-            await cache.set(
+            cache_value = {
+                "answer": full_answer,
+                "evidence": [e.model_dump() for e in structured.evidence],
+                "confidence": structured.confidence,
+                "caveats": structured.caveats,
+                "entity_counts": structured.entity_counts,
+                "source_breakdown": structured.source_breakdown,
+                "complexity": complexity,
+                "model_used": model_used,
+            }
+            # Exact-text tier: cheap, catches a literal repeat of this message
+            # without needing an embedding or a Qdrant round-trip.
+            await cache.set(restaurant_id, sanitized, cache_value)
+            # Semantic tier: keyed on the decomposed/rephrased query so a
+            # differently-worded paraphrase can hit too. Reuses the embedding
+            # already computed for the semantic-cache lookup on this request
+            # (precomputed_query_vector) instead of embedding again.
+            await store_cached_response(
+                retrieval_query,
                 restaurant_id,
-                sanitized,
-                {
-                    "answer": full_answer,
-                    "evidence": [e.model_dump() for e in structured.evidence],
-                    "confidence": structured.confidence,
-                    "caveats": structured.caveats,
-                    "entity_counts": structured.entity_counts,
-                    "source_breakdown": structured.source_breakdown,
-                    "complexity": complexity,
-                    "model_used": model_used,
-                },
+                cache_value,
+                embedder,
+                vector_store,
+                cache,
+                get_settings().qdrant_collection_chat_cache,
+                precomputed_vector=precomputed_query_vector,
             )
     except Exception as exc:
         logger.warning("post_response_tasks_failed", error=str(exc))

@@ -72,10 +72,13 @@ def rank_results(
 ) -> RankingResult:
     """Apply composite scoring and return ranked evidence with diagnostics.
 
-    Each result's .score field must be the RRF score produced by reciprocal_rank_fusion().
-    The composite score formula is:
-        injection_penalty * (w_rrf*rrf + w_recency*(1/(days+1)) + w_rating*(effective_rating/5))
+    Each result's .score field must be the reranker's sigmoid relevance score
+    (src/core/reranker.py) -- the real signal for how well a chunk matches the
+    query. The composite score formula is:
+        injection_penalty * (w_rrf*relevance + w_recency*(1/(days+1)) + w_rating*(effective_rating/5))
     where effective_rating is sentiment-mapped when text sentiment and star rating disagree.
+    The w_rrf weight name is historical (it used to weight an RRF score); it
+    now weights the reranker's relevance score.
     """
     if today is None:
         today = datetime.now(tz=UTC)
@@ -93,7 +96,7 @@ def rank_results(
 
     for result in fused_results:
         p = result.payload
-        rrf_score = result.score
+        relevance_score = result.score
 
         effective_rating = _effective_rating(p)
         rating_contribution = effective_rating / 5.0
@@ -105,7 +108,7 @@ def rank_results(
         injection_penalty = 0.5 if p.get("has_injection_attempt", False) else 1.0
 
         composite = injection_penalty * (
-            w_rrf * rrf_score + w_recency * recency_score + w_rating * rating_contribution
+            w_rrf * relevance_score + w_recency * recency_score + w_rating * rating_contribution
         )
         scored.append((composite, result))
 
