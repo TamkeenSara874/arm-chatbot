@@ -294,6 +294,12 @@ class TestBuildRetrievalParams:
         assert params.top_k == 20
         assert params.is_aggregation is True
 
+    def test_improvement_intent_forces_top_k_20_even_if_flag_false(self) -> None:
+        decomposed = DecomposedQuery(intent="improvement", needs_aggregation=False)
+        params = build_retrieval_params(decomposed)
+        assert params.top_k == 20
+        assert params.is_aggregation is True
+
     def test_no_filters_leaves_none(self) -> None:
         decomposed = DecomposedQuery(intent="factual")
         params = build_retrieval_params(decomposed)

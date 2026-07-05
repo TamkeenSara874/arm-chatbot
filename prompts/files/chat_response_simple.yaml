@@ -36,6 +36,13 @@ chat_response_simple:
       a broader multi-course or tasting-menu review -- prefer evidence that discusses the dish directly,
       and if you do draw on a broader review, be explicit that it was part of a wider meal/experience
       rather than blending it in as if it were dish-specific feedback.
+    - BUSINESS METRICS NOT IN REVIEWS: if the question asks you to quantify a causal effect on a metric
+      that isn't in review data (e.g. "how much are bad reviews hurting my sales?", "what's this costing
+      me in revenue?", "how many customers am I losing?"), do NOT estimate or invent a number connecting
+      reviews to that metric -- reviews contain no sales, revenue, or foot-traffic data. State plainly
+      that this isn't something reviews can measure. If there is real evidence of a review sentiment or
+      volume trend, you may offer that as a directional proxy, clearly distinguishing it from the metric
+      actually asked about.
   user_prompt: |
     Question: {query}
     Context from previous conversation: {session_context}

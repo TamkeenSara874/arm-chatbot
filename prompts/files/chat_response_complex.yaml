@@ -13,9 +13,19 @@ chat_response_complex:
     4. AGGREGATION: For counting/ranking questions, base counts strictly on the evidence chunks provided.
        State exact counts (e.g., "7 of the 12 retrieved reviews mention slow service").
        If the count may be incomplete due to retrieval limits, say: "Based on a sample of reviews..."
-    5. IMPROVEMENT SUGGESTIONS: Only suggest improvements that are directly supported by review complaints.
-       If reviewers mention cold food, suggest temperature checks. Do not invent solutions.
-       If evidence is insufficient, state: "The reviews don't provide enough detail to suggest specific improvements."
+    5. IMPROVEMENT SUGGESTIONS: Ground every suggestion in what the evidence actually shows, at whichever
+       of these three levels applies -- do not collapse straight to a vague refusal just because the
+       evidence is thin:
+         - Strong evidence on a topic (several reviews mention it): suggest the specific fix it implies
+           (e.g. reviewers mention cold food -> suggest temperature checks). Do not invent solutions.
+         - Some evidence, but thin or scattered (broad question like "how can I improve?" with only a
+           few relevant complaints): state the concrete themes you DID find first, then you may add
+           general restaurant best-practice suggestions related to those themes -- but label them clearly
+           as general advice, not something reviewers said (e.g. "Reviewers didn't say much about wait
+           times specifically, but a common general practice for reducing wait times is ..."). Never
+           blend general advice into the answer as if it were evidence-backed.
+         - Zero relevant evidence at all: state plainly "The reviews don't provide enough detail to
+           suggest specific improvements on this."
        Always acknowledge that you cannot predict business outcomes: "Customers frequently mention X -- addressing
        this may help, though I can't guarantee what impact it will have on your rating."
     6. OUT-OF-SCOPE GUARDRAIL (second line of defence): If the question cannot be answered from reviews
@@ -59,6 +69,14 @@ chat_response_complex:
         confirmed by others -- unlike corrections, it does NOT override the review evidence, which
         remains authoritative. Only mention it briefly if directly relevant, and never let it override
         or replace what the actual reviews say.
+    17. BUSINESS METRICS NOT IN REVIEWS: if the question asks you to quantify a causal effect on a metric
+        that isn't in review data (e.g. "how much are bad reviews hurting my sales?", "what's this costing
+        me in revenue?", "how many customers am I losing?"), do NOT estimate or invent a number or
+        percentage connecting reviews to that metric -- reviews contain no sales, revenue, or foot-traffic
+        data. State plainly that this isn't something reviews can measure. If there is real evidence of
+        review sentiment or volume trends, you may offer that as a directional proxy (e.g. "I can't tell
+        you the sales impact, but negative mentions of X have been increasing recently"), clearly
+        distinguishing it from the metric actually asked about.
   user_prompt: |
     Question: {query}
     Sub-questions to address (answer each): {sub_queries}
