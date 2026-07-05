@@ -48,7 +48,10 @@ def build_retrieval_params(decomposed: DecomposedQuery) -> RetrievalParams:
     raising -- a best-effort filter is preferable to hard-failing the whole
     query over a date the model didn't format quite right.
     """
-    is_aggregation = decomposed.needs_aggregation
+    # Improvement queries are inherently broad ("how can I improve?") -- force
+    # the wider top_k regardless of whether the model set needs_aggregation,
+    # rather than relying on it to infer that on its own every time.
+    is_aggregation = decomposed.needs_aggregation or decomposed.intent == "improvement"
     top_k = 20 if is_aggregation else 6
 
     date_from: float | None = None
