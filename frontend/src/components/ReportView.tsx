@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useReport } from '../hooks/useChat';
 import { useChatStore } from '../store/chatStore';
+import { ReportCharts } from './ReportCharts';
 
 interface ReportViewProps {
   onClose: () => void;
@@ -141,24 +142,26 @@ export function ReportView({ onClose }: ReportViewProps) {
           )}
 
           {data?.report.markdown && (
-            <div
-              ref={contentRef}
-              className="prose prose-sm prose-gray max-w-none
-                prose-headings:font-semibold prose-headings:text-gray-800
-                prose-h1:text-xl prose-h1:border-b prose-h1:border-gray-200 prose-h1:pb-2
-                prose-h2:text-base prose-h2:mt-6
-                prose-h3:text-sm
-                prose-p:text-gray-700 prose-p:leading-relaxed
-                prose-li:text-gray-700
-                prose-table:text-sm
-                prose-th:bg-gray-50 prose-th:text-gray-600 prose-th:font-semibold prose-th:text-xs
-                prose-td:text-gray-700
-                prose-strong:text-gray-900
-                prose-hr:border-gray-200"
-            >
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {data.report.markdown}
-              </ReactMarkdown>
+            <div ref={contentRef}>
+              <ReportCharts report={data.report} />
+              <div
+                className="prose prose-sm prose-gray max-w-none
+                  prose-headings:font-semibold prose-headings:text-gray-800
+                  prose-h1:text-xl prose-h1:border-b prose-h1:border-gray-200 prose-h1:pb-2
+                  prose-h2:text-base prose-h2:mt-6
+                  prose-h3:text-sm
+                  prose-p:text-gray-700 prose-p:leading-relaxed
+                  prose-li:text-gray-700
+                  prose-table:text-sm
+                  prose-th:bg-gray-50 prose-th:text-gray-600 prose-th:font-semibold prose-th:text-xs
+                  prose-td:text-gray-700
+                  prose-strong:text-gray-900
+                  prose-hr:border-gray-200"
+              >
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {data.report.markdown}
+                </ReactMarkdown>
+              </div>
             </div>
           )}
         </div>
