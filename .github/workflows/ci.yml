@@ -80,8 +80,14 @@ jobs:
 
       qdrant:
         image: qdrant/qdrant:v1.10.0
+        # qdrant/qdrant has neither curl nor wget -- a curl-based health-cmd
+        # can never succeed and always times out as "unhealthy" (confirmed
+        # live: qdrant's own logs show it fully up with zero errors while
+        # the healthcheck alone fails). bash is present, so a plain TCP
+        # connect via /dev/tcp is enough to confirm the port is accepting
+        # connections.
         options: >-
-          --health-cmd "curl -sf http://localhost:6333/healthz"
+          --health-cmd "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
