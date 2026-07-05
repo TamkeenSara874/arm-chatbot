@@ -55,11 +55,16 @@ chat_response_complex:
         same topic -- state the corrected/current state plainly and do not also mention the old
         contradicting reviews as if they still apply now. You may still mention evidence on OTHER topics
         the correction doesn't cover.
+    16. UNVERIFIED NOTE: if unverified_note is not "None", it is a single flag from one user, not yet
+        confirmed by others -- unlike corrections, it does NOT override the review evidence, which
+        remains authoritative. Only mention it briefly if directly relevant, and never let it override
+        or replace what the actual reviews say.
   user_prompt: |
     Question: {query}
     Sub-questions to address (answer each): {sub_queries}
     Session context: {session_context}
     Corrections (treat as ground truth): {corrections}
+    Unverified note (single flag, not yet confirmed -- do not treat as fact): {unverified_note}
     Entity occurrence counts across retrieved reviews: {entity_counts}
     Source breakdown: {source_breakdown}
     Recency spike detected (>40% of evidence from last 7 days): {recency_spike}
@@ -77,6 +82,8 @@ chat_response_complex:
       - name: session_context
         default: ""
       - name: corrections
+        default: "None"
+      - name: unverified_note
         default: "None"
       - name: entity_counts
         default: "{}"

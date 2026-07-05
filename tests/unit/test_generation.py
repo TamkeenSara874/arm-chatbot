@@ -212,6 +212,38 @@ class TestBuildGenerationPrompt:
         _, kwargs = loader.format.call_args
         assert kwargs["exact_count"] == "None"
 
+    def test_unverified_note_defaults_to_none_string(self) -> None:
+        loader = MagicMock()
+        loader.format.return_value = ("system", "user")
+        build_generation_prompt(
+            loader,
+            "chat_response_simple",
+            False,
+            query="q",
+            session_context="ctx",
+            corrections="None",
+            evidence="ev",
+        )
+        _, kwargs = loader.format.call_args
+        assert kwargs["unverified_note"] == "None"
+
+    def test_unverified_note_is_passed_through_distinct_from_corrections(self) -> None:
+        loader = MagicMock()
+        loader.format.return_value = ("system", "user")
+        build_generation_prompt(
+            loader,
+            "chat_response_simple",
+            False,
+            query="q",
+            session_context="ctx",
+            corrections="None",
+            unverified_note="One user flagged the service as slow.",
+            evidence="ev",
+        )
+        _, kwargs = loader.format.call_args
+        assert kwargs["unverified_note"] == "One user flagged the service as slow."
+        assert kwargs["corrections"] == "None"
+
 
 class TestCleanAnswerText:
     def test_plain_text_passthrough(self) -> None:

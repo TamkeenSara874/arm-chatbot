@@ -22,6 +22,11 @@ chat_response_simple:
       contradicting reviews as if they still apply now (e.g. don't say "though some reviews mention X"
       right after a correction says X is no longer true). You may still mention evidence on OTHER topics
       the correction doesn't cover.
+    - If an unverified_note is provided (not "None"), it is a single flag from one user, NOT yet
+      confirmed by others -- unlike corrections, it does NOT override the review evidence. The real
+      evidence remains authoritative. Only mention the note briefly if directly relevant (e.g. "one
+      customer noted X, though this hasn't been widely reported"), and never let it override or replace
+      what the actual reviews say.
     - SINGLE-DISH/ITEM QUESTIONS: if the question asks about one specific dish or item (e.g. "what do
       people say about the pasta?"), keep the answer scoped to that dish. A review may mention other
       ingredients or components as part of the same dish (e.g. "the chicken in the alfredo pasta was
@@ -35,6 +40,7 @@ chat_response_simple:
     Question: {query}
     Context from previous conversation: {session_context}
     Corrections (treat as ground truth): {corrections}
+    Unverified note (single flag, not yet confirmed -- do not treat as fact): {unverified_note}
     Review evidence:
     {evidence}
     Write the answer as plain text (no JSON, no markdown fences):
@@ -45,6 +51,8 @@ chat_response_simple:
       - name: session_context
         default: ""
       - name: corrections
+        default: "None"
+      - name: unverified_note
         default: "None"
       - name: evidence
         default: ""

@@ -617,8 +617,11 @@ async def _pipeline_stream(
             trace.generation_ms = 0.0
             trace.generation_model = model_used
         else:
-            # Correction lookup
-            correction_text = await find_correction(
+            # Correction lookup. A single flag isn't confirmed -- route it into
+            # unverified_note (informational only) rather than corrections
+            # (treated as ground truth, overriding conflicting evidence) until
+            # it reaches CONSENSUS_THRESHOLD distinct flags.
+            correction_match = await find_correction(
                 query=sanitized,
                 restaurant_id=restaurant_id,
                 intent=decomposed.intent,
@@ -626,10 +629,18 @@ async def _pipeline_stream(
                 vector_store=vector_store,
                 threshold=settings_.correction_sim_threshold,
             )
+            confirmed_correction = "None"
+            unverified_note = "None"
+            if correction_match is not None:
+                if correction_match.is_consensus:
+                    confirmed_correction = correction_match.text
+                else:
+                    unverified_note = correction_match.text
 
             # Session context
             session_context = await build_session_context(
                 session_id=body.session_id,
+                restaurant_id=restaurant_id,
                 current_query=sanitized,
                 db_session=db,
                 vector_store=vector_store,
@@ -650,7 +661,8 @@ async def _pipeline_stream(
                 selection.is_complex,
                 query=sanitized,
                 session_context=session_context,
-                corrections=correction_text or "None",
+                corrections=confirmed_correction,
+                unverified_note=unverified_note,
                 evidence=format_evidence(ranked.evidence),
                 sub_queries=decomposed.sub_queries,
                 entity_counts=ranked.entity_counts,
@@ -828,6 +840,7 @@ async def _post_response_tasks(
             # Store user turn in Qdrant session memory
             await store_session_turn(
                 session_id=session_id,
+                restaurant_id=restaurant_id,
                 role="user",
                 content=sanitized,
                 embedder=embedder,

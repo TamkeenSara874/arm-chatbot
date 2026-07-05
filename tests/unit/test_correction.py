@@ -58,7 +58,41 @@ class TestFindCorrection:
         embedder = _make_embedder()
         store = _make_vector_store(search_results=[sr])
         result = await find_correction("What is best?", 1, "factual", embedder, store)
-        assert result == "The best dish is biryani."
+        assert result.text == "The best dish is biryani."
+
+    @pytest.mark.asyncio
+    async def test_missing_is_consensus_in_payload_defaults_false(self) -> None:
+        sr = SearchResult(
+            id="c1",
+            score=0.92,
+            payload={
+                "restaurant_id": 1,
+                "intent": "factual",
+                "corrected_response": "The best dish is biryani.",
+            },
+        )
+        embedder = _make_embedder()
+        store = _make_vector_store(search_results=[sr])
+        result = await find_correction("What is best?", 1, "factual", embedder, store)
+        assert result.is_consensus is False
+
+    @pytest.mark.asyncio
+    async def test_is_consensus_true_is_surfaced_from_payload(self) -> None:
+        sr = SearchResult(
+            id="c1",
+            score=0.92,
+            payload={
+                "restaurant_id": 1,
+                "intent": "factual",
+                "corrected_response": "The food is now excellent after a menu overhaul.",
+                "is_consensus": True,
+            },
+        )
+        embedder = _make_embedder()
+        store = _make_vector_store(search_results=[sr])
+        result = await find_correction("How is the food?", 1, "factual", embedder, store)
+        assert result.is_consensus is True
+        assert result.text == "The food is now excellent after a menu overhaul."
 
     @pytest.mark.asyncio
     async def test_intent_mismatch_is_skipped(self) -> None:
@@ -89,7 +123,7 @@ class TestFindCorrection:
         embedder = _make_embedder()
         store = _make_vector_store(search_results=[sr])
         result = await find_correction("Some query", 1, "factual", embedder, store)
-        assert result == "This has no intent field."
+        assert result.text == "This has no intent field."
 
     @pytest.mark.asyncio
     async def test_lookup_failure_returns_none(self) -> None:

@@ -18,9 +18,18 @@ logger = structlog.get_logger()
 
 SESSION_MEMORY_COLLECTION = "session_memory"
 
+# build_session_context's relevant-turn search now spans this restaurant's
+# entire session_memory history, not just the current session -- unlike the
+# old session-scoped search (naturally bounded by how long one conversation
+# runs), an unbounded restaurant-wide search could surface something many
+# months old that's no longer representative. Cap how far back a
+# cross-session match can come from.
+MAX_CROSS_SESSION_AGE_DAYS = 90
+
 
 async def store_session_turn(
     session_id: uuid.UUID,
+    restaurant_id: int,
     role: str,
     content: str,
     embedder: BaseEmbedder,
@@ -28,7 +37,9 @@ async def store_session_turn(
 ) -> None:
     """Embed and upsert one message into the session_memory Qdrant collection.
 
-    Called after each user message so future semantic lookups can surface it.
+    Called after each user message so future semantic lookups can surface it --
+    both within this session and, via build_session_context's restaurant_id
+    filter, across this restaurant's other sessions too (cross-session memory).
     Failures are swallowed so a Qdrant outage never breaks the chat response.
     """
     point_id = str(uuid.uuid4())
@@ -42,6 +53,7 @@ async def store_session_turn(
                     "vector": vector,
                     "payload": {
                         "session_id": str(session_id),
+                        "restaurant_id": restaurant_id,
                         "role": role,
                         "content": content,
                         "created_at_ts": int(datetime.now(tz=UTC).timestamp()),
@@ -87,6 +99,7 @@ async def build_recent_turns_context(
 
 async def build_session_context(
     session_id: uuid.UUID,
+    restaurant_id: int,
     current_query: str,
     db_session: AsyncSession,
     vector_store: BaseVectorStore,
@@ -99,7 +112,13 @@ async def build_session_context(
 
     Combines three layers (in order of priority):
     1. A rolling LLM summary if one exists on the session row (covers distant history)
-    2. The top relevant_k past turns semantically similar to the current query
+    2. The top relevant_k past turns semantically similar to the current query --
+       searched across this restaurant's ENTIRE session_memory history (filtered
+       by restaurant_id, not session_id), so a relevant exchange from a past,
+       separate conversation surfaces here too, not just turns from the current
+       session. A turn from a different session is labeled with how long ago it
+       happened so the model can judge whether it's likely still current, and
+       anything older than MAX_CROSS_SESSION_AGE_DAYS is excluded outright.
     3. The last recent_k message pairs verbatim for immediate continuity
 
     The combined block is trimmed to token_budget before returning.
@@ -125,14 +144,28 @@ async def build_session_context(
             SESSION_MEMORY_COLLECTION,
             query_vector,
             limit=relevant_k + recent_k,
-            filters={"session_id": str(session_id)},
+            filters={"restaurant_id": restaurant_id},
         )
+        now_ts = datetime.now(tz=UTC).timestamp()
         for ann_result in ann_results:
             content = ann_result.payload.get("content", "")
             role = ann_result.payload.get("role", "user")
-            if content and content not in recent_contents:
-                label = "User" if role == "user" else "Assistant"
-                relevant_turns.append(f"{label}: {content}")
+            if not content or content in recent_contents:
+                continue
+
+            age_note = ""
+            if ann_result.payload.get("session_id") != str(session_id):
+                created_at_ts = ann_result.payload.get("created_at_ts")
+                if not created_at_ts:
+                    continue
+                days_ago = (now_ts - created_at_ts) / 86400
+                if days_ago > MAX_CROSS_SESSION_AGE_DAYS:
+                    continue
+                if days_ago >= 1:
+                    age_note = f" (from a past conversation, {int(days_ago)} day(s) ago)"
+
+            label = "User" if role == "user" else "Assistant"
+            relevant_turns.append(f"{label}: {content}{age_note}")
             if len(relevant_turns) >= relevant_k:
                 break
     except Exception as exc:
