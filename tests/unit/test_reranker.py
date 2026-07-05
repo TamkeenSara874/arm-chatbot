@@ -48,7 +48,9 @@ class TestQuantizedExportDir:
     def test_path_under_hf_home_keyed_by_model_and_config(self) -> None:
         with patch("huggingface_hub.constants.HF_HOME", "/fake/hf/home"):
             result = _quantized_export_dir("cross-encoder/ms-marco-MiniLM-L6-v2", "avx2")
-        assert result == Path("/fake/hf/home/onnx-quantized/cross-encoder__ms-marco-MiniLM-L6-v2/avx2")
+        assert result == Path(
+            "/fake/hf/home/onnx-quantized/cross-encoder__ms-marco-MiniLM-L6-v2/avx2"
+        )
 
     def test_different_quantization_configs_get_different_dirs(self) -> None:
         with patch("huggingface_hub.constants.HF_HOME", "/fake/hf/home"):
@@ -127,7 +129,9 @@ class TestLoadCrossEncoderOnnxQuantized:
         mock_ce_cls.return_value = mock_instance
 
         with (
-            patch.dict("sys.modules", {"sentence_transformers": MagicMock(CrossEncoder=mock_ce_cls)}),
+            patch.dict(
+                "sys.modules", {"sentence_transformers": MagicMock(CrossEncoder=mock_ce_cls)}
+            ),
             patch("src.core.reranker._quantized_export_dir", return_value=tmp_path),
             patch("src.core.reranker._ensure_quantized_export") as mock_ensure,
         ):
@@ -148,7 +152,9 @@ class TestLoadReranker:
         reranker_module._model_cache.clear()
 
         mock_model = MagicMock()
-        mock_settings = MagicMock(reranker_onnx_quantized=False, reranker_onnx_quantization_config="avx2")
+        mock_settings = MagicMock(
+            reranker_onnx_quantized=False, reranker_onnx_quantization_config="avx2"
+        )
 
         with (
             patch("src.config.get_settings", return_value=mock_settings),
@@ -178,7 +184,9 @@ class TestLoadReranker:
 
         reranker_module._model_cache.clear()
         mock_model = MagicMock()
-        mock_settings = MagicMock(reranker_onnx_quantized=False, reranker_onnx_quantization_config="avx2")
+        mock_settings = MagicMock(
+            reranker_onnx_quantized=False, reranker_onnx_quantization_config="avx2"
+        )
 
         with (
             patch("src.config.get_settings", return_value=mock_settings),
@@ -197,7 +205,9 @@ class TestLoadReranker:
 
         reranker_module._model_cache.clear()
         mock_model = MagicMock()
-        mock_settings = MagicMock(reranker_onnx_quantized=True, reranker_onnx_quantization_config="avx2")
+        mock_settings = MagicMock(
+            reranker_onnx_quantized=True, reranker_onnx_quantization_config="avx2"
+        )
 
         with (
             patch("src.config.get_settings", return_value=mock_settings),
@@ -305,7 +315,9 @@ class TestRerank:
             mock_model = MagicMock()
             mock_model.predict = MagicMock(return_value=[-11.44, -11.45, -11.46])
             mock_load.return_value = mock_model
-            ranked = await rerank("summarize the negative reviews", results, model_name="mock-model")
+            ranked = await rerank(
+                "summarize the negative reviews", results, model_name="mock-model"
+            )
         assert [r.id for r in ranked] == ["first", "second", "third"]
         assert [r.score for r in ranked] == [0.9, 0.5, 0.3]
 

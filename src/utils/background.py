@@ -21,7 +21,9 @@ from typing import Any
 _background_tasks: set[asyncio.Task[Any]] = set()
 
 
-def fire_and_forget(coro: Coroutine[Any, Any, Any], *, name: str | None = None) -> asyncio.Task[Any]:
+def fire_and_forget(
+    coro: Coroutine[Any, Any, Any], *, name: str | None = None
+) -> asyncio.Task[Any]:
     """Schedule coro as a task that keeps running even though nothing awaits it.
 
     Keeps a strong reference in a module-level set until the task completes,

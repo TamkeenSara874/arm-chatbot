@@ -29,6 +29,11 @@ _ONNX_EXPORT_SIBLING_FILES = (
     "vocab.txt",
 )
 
+# Immutable commit for cross-encoder/ms-marco-MiniLM-L6-v2 (config.py's
+# default reranker_model), used to pin the snapshot_download() call in
+# _ensure_quantized_export() below -- see the comment at that call site.
+_RERANKER_SNAPSHOT_REVISION = "c5ee24cb16019beea0893ab7796b1df96625c6b8"
+
 _model_cache: dict[str, CrossEncoder] = {}
 _load_lock: asyncio.Lock | None = None
 
@@ -114,7 +119,13 @@ def _ensure_quantized_export(model_name: str, quantization_config: str, export_d
     # loading straight from export_dir without it fails AutoConfig resolution).
     from huggingface_hub import snapshot_download
 
-    snapshot_dir = Path(snapshot_download(model_name))
+    # Pinned to an immutable commit, not the "main" branch pointer -- a repo
+    # push otherwise could silently swap what gets downloaded here (bandit
+    # B615). Deliberately unconditional: if reranker_model is ever pointed at
+    # a different repo, this pin fails to resolve with a loud, visible error
+    # instead of silently trusting whatever's on that other repo's main
+    # branch -- update _RERANKER_SNAPSHOT_REVISION alongside the model.
+    snapshot_dir = Path(snapshot_download(model_name, revision=_RERANKER_SNAPSHOT_REVISION))
     for name in _ONNX_EXPORT_SIBLING_FILES:
         src = snapshot_dir / name
         if src.exists():

@@ -98,7 +98,9 @@ def select_generation(
     is_complex = decomposed.complexity == "complex" or bool(precomputed_count)
     model_used = settings.openai_complex_model if is_complex else settings.openai_simple_model
     prompt_name = "chat_response_complex" if is_complex else "chat_response_simple"
-    return GenerationSelection(is_complex=is_complex, model_used=model_used, prompt_name=prompt_name)
+    return GenerationSelection(
+        is_complex=is_complex, model_used=model_used, prompt_name=prompt_name
+    )
 
 
 def build_generation_prompt(

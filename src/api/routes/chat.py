@@ -918,5 +918,3 @@ async def _yield_instant(
         "model_used": model_used,
     }
     yield {"event": "done", "data": json.dumps(payload)}
-
-

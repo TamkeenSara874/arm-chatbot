@@ -201,8 +201,13 @@ class TestBuildGenerationPrompt:
         loader = MagicMock()
         loader.format.return_value = ("system", "user")
         build_generation_prompt(
-            loader, "chat_response_complex", True,
-            query="q", session_context="ctx", corrections="None", evidence="ev",
+            loader,
+            "chat_response_complex",
+            True,
+            query="q",
+            session_context="ctx",
+            corrections="None",
+            evidence="ev",
         )
         _, kwargs = loader.format.call_args
         assert kwargs["exact_count"] == "None"

@@ -130,7 +130,9 @@ class TestInvalidateCachedResponse:
         vector_store = MagicMock(delete=AsyncMock())
         redis_cache = MagicMock(invalidate_query=AsyncMock(return_value=True))
 
-        await invalidate_cached_response("how is the food?", 1, vector_store, redis_cache, COLLECTION)
+        await invalidate_cached_response(
+            "how is the food?", 1, vector_store, redis_cache, COLLECTION
+        )
 
         redis_cache.invalidate_query.assert_called_once_with(1, "how is the food?")
         vector_store.delete.assert_called_once()
@@ -146,7 +148,13 @@ class TestInvalidateCachedResponse:
         embedder = MagicMock(embed_one=AsyncMock(return_value=[0.1]))
 
         await store_cached_response(
-            "how is the food?", 1, {"answer": "ok"}, embedder, vector_store_store, redis_cache, COLLECTION
+            "how is the food?",
+            1,
+            {"answer": "ok"},
+            embedder,
+            vector_store_store,
+            redis_cache,
+            COLLECTION,
         )
         stored_point_id = vector_store_store.upsert.call_args[0][1][0]["id"]
 
@@ -163,6 +171,8 @@ class TestInvalidateCachedResponse:
         vector_store = MagicMock(delete=AsyncMock(side_effect=RuntimeError("qdrant down")))
         redis_cache = MagicMock(invalidate_query=AsyncMock(return_value=True))
 
-        await invalidate_cached_response("how is the food?", 1, vector_store, redis_cache, COLLECTION)
+        await invalidate_cached_response(
+            "how is the food?", 1, vector_store, redis_cache, COLLECTION
+        )
 
         redis_cache.invalidate_query.assert_called_once()

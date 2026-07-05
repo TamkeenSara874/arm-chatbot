@@ -60,9 +60,7 @@ class TestRotatingGroqClient:
     @pytest.mark.asyncio
     async def test_rotates_to_next_key_on_rate_limit(self) -> None:
         client = RotatingGroqClient(api_keys=["key1", "key2"], model="llama-3.3-70b-versatile")
-        client._clients[0].chat.completions.create = AsyncMock(
-            side_effect=_rate_limit_error()
-        )
+        client._clients[0].chat.completions.create = AsyncMock(side_effect=_rate_limit_error())
         client._clients[1].chat.completions.create = AsyncMock(
             return_value=_mock_completion("from key2")
         )

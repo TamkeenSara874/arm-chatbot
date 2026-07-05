@@ -155,7 +155,10 @@ async def hybrid_retrieve(
 
     if not results:
         logger.info(
-            "retrieval_breakdown", embed_ms=round(embed_ms, 1), search_ms=round(search_ms, 1), rerank_ms=0.0
+            "retrieval_breakdown",
+            embed_ms=round(embed_ms, 1),
+            search_ms=round(search_ms, 1),
+            rerank_ms=0.0,
         )
         if timing is not None:
             timing.embed_ms = embed_ms
@@ -191,7 +194,10 @@ async def hybrid_retrieve(
         return reranked
 
     logger.info(
-        "retrieval_breakdown", embed_ms=round(embed_ms, 1), search_ms=round(search_ms, 1), rerank_ms=0.0
+        "retrieval_breakdown",
+        embed_ms=round(embed_ms, 1),
+        search_ms=round(search_ms, 1),
+        rerank_ms=0.0,
     )
     if timing is not None:
         timing.embed_ms = embed_ms
