@@ -386,7 +386,12 @@ async def test_cache_hit_on_repeat(
 ) -> None:
     # Unique per run (cache key is a hash of the exact query text) so a
     # previous run's still-live TTL entry can't make "first" look like a hit.
-    message = f"What do people say about the pasta? (run {uuid.uuid4().hex[:8]})"
+    # Topic deliberately distinct from any other fixture case's subject (e.g.
+    # SG-02 also asks about pasta) -- the semantic cache tier matches on
+    # meaning, not exact text, so a random suffix alone doesn't stop a
+    # same-session near-duplicate question elsewhere in this file from
+    # being found as a legitimate paraphrase and causing an unintended hit.
+    message = f"What do people say about the desserts? (run {uuid.uuid4().hex[:8]})"
     first = await send_query(api_client, jwt, session_id, SEEDED_RESTAURANT_ID, message)
     # _post_response_tasks() (the cache write) is intentionally fire-and-forget
     # so the SSE response doesn't wait on it -- give it a moment to land before
@@ -435,7 +440,12 @@ async def test_zero_data_does_not_hallucinate(
 ) -> None:
     jwt_unseeded = await get_jwt(api_client, UNSEEDED_RESTAURANT_ID)
     sess = await create_session(api_client, jwt_unseeded, UNSEEDED_RESTAURANT_ID)
-    message = "What do customers think of this restaurant?"
+    # Unique per run (cache key is a hash of the exact query text) so a
+    # previous run's still-live TTL entry can't make this look like a cache
+    # hit instead of a fresh no_evidence_gate classification -- confirmed
+    # live: a prior run's cache entry for this exact fixed string caused
+    # model_used="cache" instead of "no_evidence_gate" on a later run.
+    message = f"What do customers think of this restaurant? (run {uuid.uuid4().hex[:8]})"
     result = await send_query(api_client, jwt_unseeded, sess, UNSEEDED_RESTAURANT_ID, message)
 
     assert result.evidence == [], "ZD-01: expected zero evidence for a never-ingested restaurant"

@@ -8,7 +8,6 @@
 # -- confirmed via isolated repro. This is the only route file with an
 # UploadFile parameter, so it's the only one that needs this left off.
 
-import asyncio
 import uuid
 from typing import Annotated
 
@@ -34,6 +33,7 @@ from src.services.cache import RedisCache
 from src.services.embedding.base import BaseEmbedder
 from src.services.llm.base import BaseLLMClient
 from src.services.vector.base import BaseVectorStore
+from src.utils.background import fire_and_forget
 from src.utils.security import check_file_upload
 from src.workers.ingest_worker import run_ingest_job
 
@@ -107,7 +107,7 @@ async def ingest_reviews(
         size_bytes=len(file_bytes),
     )
 
-    asyncio.create_task(
+    fire_and_forget(
         run_ingest_job(
             job_id=job.id,
             restaurant_id=restaurant_id,

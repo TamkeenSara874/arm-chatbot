@@ -29,6 +29,8 @@ class RequestTrace:
 
     decomp_ms: float = 0.0
     retrieval_ms: float = 0.0
+    embed_ms: float = 0.0
+    search_ms: float = 0.0
     rerank_ms: float = 0.0
     ranking_ms: float = 0.0
     generation_ms: float = 0.0
@@ -88,6 +90,8 @@ class RequestTrace:
             "complexity": self.complexity,
             "decomp_ms": round(self.decomp_ms, 1),
             "retrieval_ms": round(self.retrieval_ms, 1),
+            "embed_ms": round(self.embed_ms, 1),
+            "search_ms": round(self.search_ms, 1),
             "rerank_ms": round(self.rerank_ms, 1),
             "ranking_ms": round(self.ranking_ms, 1),
             "generation_ms": round(self.generation_ms, 1),

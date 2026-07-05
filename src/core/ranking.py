@@ -139,8 +139,14 @@ def rank_results(
 
     staleness_caveat: str | None = None
     if dates_in_top and not recency_spike and not has_explicit_date_filter:
-        oldest = min(dates_in_top)
-        if (today - oldest).days > staleness_days:
+        # Majority-stale, not single-oldest-stale: a corpus spanning years will
+        # almost always contain at least one review older than staleness_days
+        # among any reasonably-sized evidence set (e.g. 18 recent + 2 from
+        # 2019), and checking only min(dates_in_top) fired this caveat on
+        # nearly every aggregate query regardless of how recent most of the
+        # evidence actually was. Only warn when most of what's shown is old.
+        stale_count = sum(1 for d in dates_in_top if (today - d).days > staleness_days)
+        if stale_count > len(dates_in_top) / 2:
             staleness_caveat = (
                 "Note: the most relevant reviews found are from over a year ago. "
                 "This information may be outdated -- you may want to look for more recent feedback."

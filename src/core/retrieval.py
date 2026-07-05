@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -9,7 +13,73 @@ from src.services.embedding.base import BaseEmbedder
 from src.services.embedding.sparse_embedder import compute_sparse_vector
 from src.services.vector.base import BaseVectorStore, SearchResult
 
+if TYPE_CHECKING:
+    from src.models.schemas import DecomposedQuery
+
 logger = structlog.get_logger()
+
+
+@dataclass
+class RetrievalTiming:
+    """Populated in place by hybrid_retrieve() when passed in, so a caller
+    can get the embed/search/rerank breakdown without changing the function's
+    return type (list[SearchResult] stays untouched -- three existing test
+    call sites rely on that)."""
+
+    embed_ms: float = 0.0
+    search_ms: float = 0.0
+    rerank_ms: float = 0.0
+
+
+@dataclass
+class RetrievalParams:
+    top_k: int
+    date_from: float | None
+    date_to: float | None
+    rating_min: float | None
+    rating_max: float | None
+    is_aggregation: bool
+
+
+def build_retrieval_params(decomposed: DecomposedQuery) -> RetrievalParams:
+    """Derive retrieval filters/top_k from a decomposed query.
+
+    Malformed ISO date strings are silently suppressed to None rather than
+    raising -- a best-effort filter is preferable to hard-failing the whole
+    query over a date the model didn't format quite right.
+    """
+    is_aggregation = decomposed.needs_aggregation
+    top_k = 20 if is_aggregation else 6
+
+    date_from: float | None = None
+    date_to: float | None = None
+    if decomposed.date_filter:
+        if decomposed.date_filter.from_date:
+            with contextlib.suppress(ValueError):
+                date_from = (
+                    datetime.fromisoformat(decomposed.date_filter.from_date)
+                    .replace(tzinfo=UTC)
+                    .timestamp()
+                )
+        if decomposed.date_filter.to_date:
+            with contextlib.suppress(ValueError):
+                date_to = (
+                    datetime.fromisoformat(decomposed.date_filter.to_date)
+                    .replace(tzinfo=UTC)
+                    .timestamp()
+                )
+
+    rating_min = decomposed.rating_filter.min if decomposed.rating_filter else None
+    rating_max = decomposed.rating_filter.max if decomposed.rating_filter else None
+
+    return RetrievalParams(
+        top_k=top_k,
+        date_from=date_from,
+        date_to=date_to,
+        rating_min=rating_min,
+        rating_max=rating_max,
+        is_aggregation=is_aggregation,
+    )
 
 
 async def hybrid_retrieve(
@@ -25,6 +95,7 @@ async def hybrid_retrieve(
     rating_max: float | None = None,
     reranker_model: str | None = None,
     precomputed_dense_vector: list[float] | None = None,
+    timing: RetrievalTiming | None = None,
 ) -> list[SearchResult]:
     """Hybrid retrieval using Qdrant native dense + sparse RRF.
 
@@ -35,6 +106,10 @@ async def hybrid_retrieve(
     precomputed_dense_vector lets a caller that already embedded this exact
     query text (e.g. a semantic cache lookup that just missed) skip a second,
     redundant embedding call.
+
+    timing, if provided, is populated in place with the embed/search/rerank
+    breakdown -- these numbers were already computed for the "retrieval_breakdown"
+    log line below, just never surfaced to the caller.
     """
     filters: dict = {"restaurant_id": restaurant_id}
     if date_from is not None:
@@ -82,6 +157,9 @@ async def hybrid_retrieve(
         logger.info(
             "retrieval_breakdown", embed_ms=round(embed_ms, 1), search_ms=round(search_ms, 1), rerank_ms=0.0
         )
+        if timing is not None:
+            timing.embed_ms = embed_ms
+            timing.search_ms = search_ms
         return []
 
     if reranker_model:
@@ -106,9 +184,16 @@ async def hybrid_retrieve(
             rerank_ms=round(rerank_ms, 1),
             candidate_count=len(candidates),
         )
+        if timing is not None:
+            timing.embed_ms = embed_ms
+            timing.search_ms = search_ms
+            timing.rerank_ms = rerank_ms
         return reranked
 
     logger.info(
         "retrieval_breakdown", embed_ms=round(embed_ms, 1), search_ms=round(search_ms, 1), rerank_ms=0.0
     )
+    if timing is not None:
+        timing.embed_ms = embed_ms
+        timing.search_ms = search_ms
     return results[:top_k]

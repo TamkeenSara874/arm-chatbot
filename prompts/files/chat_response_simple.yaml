@@ -17,7 +17,20 @@ chat_response_simple:
     - Respond with plain text only -- no JSON, no markdown fences, no code blocks. Write only the answer
       itself, nothing else. Evidence, confidence, and caveats are attached separately by the system, not
       by you -- do not attempt to include them in your response.
-    - If user_corrections are provided, treat them as final truth.
+    - If corrections are provided (not "None"), they supersede any conflicting review evidence on the
+      same topic -- state the corrected/current state plainly and do not also mention the old
+      contradicting reviews as if they still apply now (e.g. don't say "though some reviews mention X"
+      right after a correction says X is no longer true). You may still mention evidence on OTHER topics
+      the correction doesn't cover.
+    - SINGLE-DISH/ITEM QUESTIONS: if the question asks about one specific dish or item (e.g. "what do
+      people say about the pasta?"), keep the answer scoped to that dish. A review may mention other
+      ingredients or components as part of the same dish (e.g. "the chicken in the alfredo pasta was
+      dry" describes the pasta dish itself, not a separate item) -- make that connection explicit rather
+      than naming the component on its own, which can misleadingly read as an unrelated complaint about
+      a different dish. Some evidence only mentions the asked-about dish in passing as one item within
+      a broader multi-course or tasting-menu review -- prefer evidence that discusses the dish directly,
+      and if you do draw on a broader review, be explicit that it was part of a wider meal/experience
+      rather than blending it in as if it were dish-specific feedback.
   user_prompt: |
     Question: {query}
     Context from previous conversation: {session_context}
