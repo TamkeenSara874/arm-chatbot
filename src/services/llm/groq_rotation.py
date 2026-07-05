@@ -61,9 +61,7 @@ class RotatingGroqClient(BaseLLMClient):
         # key tripping a shared breaker would incorrectly block every other
         # (healthy) key too, defeating the entire point of holding N
         # independent quotas.
-        self._breakers = [
-            AsyncCircuitBreaker(f"groq_key_{i}") for i in range(len(api_keys))
-        ]
+        self._breakers = [AsyncCircuitBreaker(f"groq_key_{i}") for i in range(len(api_keys))]
 
     def _is_available(self, idx: int) -> bool:
         return self._cooldown_until.get(idx, 0.0) <= time.monotonic()
@@ -109,9 +107,7 @@ class RotatingGroqClient(BaseLLMClient):
                     label=f"{label}:key{idx}",
                     dont_retry=(RateLimitError, CircuitBreakerError),
                 )
-                llm_request_total.labels(
-                    provider="groq", model=self.model, intent=label
-                ).inc()
+                llm_request_total.labels(provider="groq", model=self.model, intent=label).inc()
                 return result
             except RateLimitError as exc:
                 self._mark_rate_limited(idx, exc)
@@ -122,7 +118,9 @@ class RotatingGroqClient(BaseLLMClient):
                 # down and move on, rather than retrying a breaker that will
                 # reject every attempt instantly anyway.
                 self._cooldown_until[idx] = time.monotonic() + _DEFAULT_COOLDOWN_SECONDS
-                logger.warning("groq_key_circuit_open", key_index=idx, keys_total=len(self._clients))
+                logger.warning(
+                    "groq_key_circuit_open", key_index=idx, keys_total=len(self._clients)
+                )
                 last_exc = exc
                 continue
             except Exception as exc:
@@ -198,4 +196,6 @@ class RotatingGroqClient(BaseLLMClient):
         temperature: float = 0.3,
         usage_callback: UsageCallback | None = None,
     ) -> AsyncIterator[str]:
-        raise NotImplementedError("RotatingGroqClient is used for decomposition only, not streaming")
+        raise NotImplementedError(
+            "RotatingGroqClient is used for decomposition only, not streaming"
+        )

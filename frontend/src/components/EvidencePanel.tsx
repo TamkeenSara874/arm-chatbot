@@ -31,7 +31,15 @@ function Stars({ rating }: { rating: number }) {
   );
 }
 
-function EvidenceCard({ item, index }: { item: EvidenceItem; index: number }) {
+function EvidenceCard({
+  item,
+  index,
+  matchPercent,
+}: {
+  item: EvidenceItem;
+  index: number;
+  matchPercent: number;
+}) {
   const sentimentStyle = item.sentiment ? SENTIMENT_STYLES[item.sentiment] ?? SENTIMENT_STYLES.Neutral : SENTIMENT_STYLES.Neutral;
   const sourceStyle = item.source ? SOURCE_STYLES[item.source] ?? 'bg-gray-100 text-gray-600' : '';
 
@@ -39,9 +47,7 @@ function EvidenceCard({ item, index }: { item: EvidenceItem; index: number }) {
     <div className="rounded-lg border border-gray-100 bg-white p-3 shadow-sm">
       <div className="mb-2 flex items-start justify-between gap-2">
         <span className="text-xs font-semibold text-gray-400">#{index + 1}</span>
-        <span className="text-xs font-medium text-aio-500">
-          {Math.round(item.relevance * 100)}% match
-        </span>
+        <span className="text-xs font-medium text-aio-500">{matchPercent}% match</span>
       </div>
 
       <p className="mb-3 text-sm leading-relaxed text-gray-700">{item.snippet}</p>
@@ -85,11 +91,33 @@ function EvidenceCard({ item, index }: { item: EvidenceItem; index: number }) {
   );
 }
 
+// Cross-encoder relevance scores are calibrated to be confidently near-0 or
+// near-1 (trained as a direct question/passage classifier), not a smooth
+// gradient -- a correctly-ranked-but-compressed evidence set (e.g. every raw
+// score under 1%) would otherwise show a wall of "0% match" badges even
+// though the ordering itself is meaningful. Min-max normalizing within this
+// response's own evidence set surfaces that relative ordering: the best
+// piece of evidence shown reads as ~100%, the weakest as ~0%, everything
+// else scaled proportionally between.
+function matchPercentages(evidence: EvidenceItem[]): number[] {
+  if (evidence.length === 0) return [];
+  const relevances = evidence.map((e) => e.relevance);
+  const min = Math.min(...relevances);
+  const max = Math.max(...relevances);
+  const spread = max - min;
+  if (spread < 1e-9) {
+    // All equally (ir)relevant -- nothing to distinguish, show them as tied.
+    return relevances.map(() => 100);
+  }
+  return relevances.map((r) => Math.round(((r - min) / spread) * 100));
+}
+
 export function EvidencePanel() {
   const { messages, selectedMessageId, setSelectedMessageId } = useChatStore();
 
   const selected = messages.find((m) => m.id === selectedMessageId);
   const evidence: EvidenceItem[] = selected?.response?.response.evidence ?? [];
+  const percentages = matchPercentages(evidence);
 
   return (
     <aside className="animate-slide-in fixed right-0 top-[64px] bottom-0 z-30 flex w-80 flex-col border-l border-gray-100 bg-gray-50">
@@ -113,7 +141,7 @@ export function EvidencePanel() {
           <p className="py-6 text-center text-sm text-gray-400">No evidence for this response.</p>
         ) : (
           evidence.map((item, i) => (
-            <EvidenceCard key={i} item={item} index={i} />
+            <EvidenceCard key={i} item={item} index={i} matchPercent={percentages[i]} />
           ))
         )}
       </div>

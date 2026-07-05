@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -12,6 +11,7 @@ from src.models.db_entities import ChatMessage, ChatSession
 from src.services.embedding.base import BaseEmbedder
 from src.services.llm.base import BaseLLMClient
 from src.services.vector.base import BaseVectorStore
+from src.utils.background import fire_and_forget
 from src.utils.token_budget import enforce_token_budget
 
 logger = structlog.get_logger()
@@ -182,7 +182,7 @@ async def maybe_trigger_summary(
     if session_row and session_row.summary is not None:
         return
 
-    asyncio.create_task(
+    fire_and_forget(
         _generate_and_save_summary(session_id, llm_client),
         name=f"session-summary-{session_id}",
     )
@@ -192,7 +192,7 @@ async def _generate_and_save_summary(
     session_id: uuid.UUID,
     llm_client: BaseLLMClient,
 ) -> None:
-    # Fire-and-forget (asyncio.create_task, not awaited): must not reuse the
+    # Fire-and-forget (fire_and_forget(), not awaited): must not reuse the
     # caller's db_session. That session belongs to a request that may finish
     # and get torn down by FastAPI's Depends(get_db) cleanup before this task
     # completes -- same "This transaction is closed" race already found and

@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.core.retrieval import RetrievalTiming, build_retrieval_params
+from src.models.schemas import DateFilter, DecomposedQuery, RatingFilter
 from src.services.vector.base import SearchResult
 
 
@@ -187,3 +189,142 @@ class TestHybridRetrieve:
 
         assert results == []
         assert not vector_store.hybrid_search.called
+
+
+class TestRetrievalTiming:
+    @pytest.mark.asyncio
+    async def test_timing_populated_when_no_reranker(self) -> None:
+        from src.core.retrieval import hybrid_retrieve
+
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(return_value=[_sr("a", 0.5)])
+        timing = RetrievalTiming()
+
+        with _sparse_patch():
+            await hybrid_retrieve(
+                query="food",
+                restaurant_id=1,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
+                timing=timing,
+            )
+
+        assert timing.embed_ms >= 0.0
+        assert timing.search_ms >= 0.0
+        assert timing.rerank_ms == 0.0
+
+    @pytest.mark.asyncio
+    async def test_timing_populated_on_empty_results(self) -> None:
+        from src.core.retrieval import hybrid_retrieve
+
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(return_value=[])
+        timing = RetrievalTiming()
+
+        with _sparse_patch():
+            await hybrid_retrieve(
+                query="food",
+                restaurant_id=1,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
+                timing=timing,
+            )
+
+        assert timing.embed_ms >= 0.0
+        assert timing.search_ms >= 0.0
+        assert timing.rerank_ms == 0.0
+
+    @pytest.mark.asyncio
+    async def test_timing_includes_rerank_ms_when_reranked(self) -> None:
+        from src.core.retrieval import hybrid_retrieve
+
+        chunks = [_sr(f"c{i}", 1.0 / (i + 1)) for i in range(10)]
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(return_value=chunks)
+        timing = RetrievalTiming()
+
+        with (
+            _sparse_patch(),
+            patch("src.core.reranker.rerank", AsyncMock(return_value=chunks[:6])),
+        ):
+            await hybrid_retrieve(
+                query="food",
+                restaurant_id=1,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
+                reranker_model="mock-model",
+                timing=timing,
+            )
+
+        assert timing.rerank_ms >= 0.0
+
+    @pytest.mark.asyncio
+    async def test_no_timing_arg_does_not_error(self) -> None:
+        """timing is optional -- existing callers that don't pass it must be unaffected."""
+        from src.core.retrieval import hybrid_retrieve
+
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(return_value=[_sr("a", 0.5)])
+
+        with _sparse_patch():
+            results = await hybrid_retrieve(
+                query="food",
+                restaurant_id=1,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
+            )
+
+        assert len(results) == 1
+
+
+class TestBuildRetrievalParams:
+    def test_non_aggregation_uses_top_k_6(self) -> None:
+        decomposed = DecomposedQuery(intent="factual", needs_aggregation=False)
+        params = build_retrieval_params(decomposed)
+        assert params.top_k == 6
+        assert params.is_aggregation is False
+
+    def test_aggregation_uses_top_k_20(self) -> None:
+        decomposed = DecomposedQuery(intent="aggregation", needs_aggregation=True)
+        params = build_retrieval_params(decomposed)
+        assert params.top_k == 20
+        assert params.is_aggregation is True
+
+    def test_no_filters_leaves_none(self) -> None:
+        decomposed = DecomposedQuery(intent="factual")
+        params = build_retrieval_params(decomposed)
+        assert params.date_from is None
+        assert params.date_to is None
+        assert params.rating_min is None
+        assert params.rating_max is None
+
+    def test_valid_date_filter_parsed_to_timestamps(self) -> None:
+        decomposed = DecomposedQuery(
+            intent="factual",
+            date_filter=DateFilter(from_date="2024-01-01", to_date="2024-12-31"),
+        )
+        params = build_retrieval_params(decomposed)
+        assert params.date_from is not None
+        assert params.date_to is not None
+        assert params.date_from < params.date_to
+
+    def test_malformed_date_suppressed_to_none(self) -> None:
+        decomposed = DecomposedQuery(
+            intent="factual",
+            date_filter=DateFilter(from_date="not-a-date"),
+        )
+        params = build_retrieval_params(decomposed)
+        assert params.date_from is None
+
+    def test_rating_filter_passed_through(self) -> None:
+        decomposed = DecomposedQuery(
+            intent="factual",
+            rating_filter=RatingFilter(min=3.0, max=5.0),
+        )
+        params = build_retrieval_params(decomposed)
+        assert params.rating_min == 3.0
+        assert params.rating_max == 5.0

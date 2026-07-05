@@ -162,6 +162,25 @@ class TestRankResults:
         assert ranking.staleness_caveat is not None
         assert "year" in ranking.staleness_caveat.lower()
 
+    def test_staleness_caveat_not_injected_when_only_one_outlier_is_old(self) -> None:
+        # 5 recent (90 days) + 1 stale outlier (400 days) -- a corpus spanning
+        # years will almost always contain at least one review this old among
+        # any reasonably-sized evidence set. The caveat should reflect whether
+        # *most* of the evidence is stale, not whether a single outlier is.
+        results = [_make_result(f"c{i}", days_old=90) for i in range(5)] + [
+            _make_result("c_old", days_old=400)
+        ]
+        ranking = rank_results(results, _mock_settings(), top_k=6)
+        assert ranking.staleness_caveat is None
+
+    def test_staleness_caveat_injected_when_majority_is_old(self) -> None:
+        # 4 stale (400 days) + 2 recent (90 days) -- majority old, should warn.
+        results = [_make_result(f"c{i}", days_old=400) for i in range(4)] + [
+            _make_result(f"c{i}", days_old=90) for i in range(4, 6)
+        ]
+        ranking = rank_results(results, _mock_settings(), top_k=6)
+        assert ranking.staleness_caveat is not None
+
     def test_low_evidence_flag_when_fewer_than_three_chunks(self) -> None:
         results = [_make_result("c1"), _make_result("c2")]
         ranking = rank_results(results, _mock_settings(), top_k=6)

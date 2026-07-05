@@ -51,6 +51,10 @@ chat_response_complex:
         reviewer by that name was found in the available reviews -- do NOT answer as if that person's
         opinion was found, and do NOT substitute a different reviewer's comment as if it were that
         person's. The question naming a person does not mean that person exists in the data.
+    15. CORRECTIONS: if corrections is not "None", it supersedes any conflicting review evidence on the
+        same topic -- state the corrected/current state plainly and do not also mention the old
+        contradicting reviews as if they still apply now. You may still mention evidence on OTHER topics
+        the correction doesn't cover.
   user_prompt: |
     Question: {query}
     Sub-questions to address (answer each): {sub_queries}

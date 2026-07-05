@@ -90,3 +90,30 @@ async def store_cached_response(
         )
     except Exception as exc:
         logger.warning("semantic_cache_store_failed", error=str(exc))
+
+
+async def invalidate_cached_response(
+    query: str,
+    restaurant_id: int,
+    vector_store: BaseVectorStore,
+    redis_cache: RedisCache,
+    collection: str,
+) -> None:
+    """Bust both the Redis value and the Qdrant semantic-index point for one query.
+
+    store_cached_response() writes under `query` -- which for a live chat turn
+    is decomposed.rephrased_query, not necessarily the raw user text -- so a
+    caller invalidating only the raw text (RedisCache.invalidate_query) misses
+    this entry whenever rephrasing occurred. Confirmed live: a correction's
+    cache-bust only cleared the raw-text key, leaving the semantic tier's
+    Redis value AND its Qdrant point live, so a re-ask kept serving the
+    pre-correction answer via a semantic hit. submit_correction() must call
+    this with the same retrieval_query it would have used, in addition to
+    (not instead of) RedisCache.invalidate_query for the raw text.
+    """
+    await redis_cache.invalidate_query(restaurant_id, query)
+    try:
+        point_id = str(uuid.uuid5(CHAT_CACHE_NAMESPACE, f"{restaurant_id}:{query.strip().lower()}"))
+        await vector_store.delete(collection, [point_id])
+    except Exception as exc:
+        logger.warning("semantic_cache_invalidate_failed", error=str(exc))

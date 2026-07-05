@@ -68,8 +68,8 @@ async def run_ingest_job(
 ) -> None:
     """Execute a full ingestion pipeline for one uploaded review file.
 
-    Runs as asyncio.create_task() -- never use FastAPI BackgroundTasks for this
-    because BackgroundTasks blocks the event loop during heavy embedding I/O.
+    Runs as a fire_and_forget() task -- never use FastAPI BackgroundTasks for
+    this because BackgroundTasks blocks the event loop during heavy embedding I/O.
     Creates its own DB session to avoid sharing a request-scoped session.
     """
     session_factory = get_session_factory()

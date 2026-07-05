@@ -47,11 +47,42 @@ class Settings(BaseSettings):
     openai_complex_model: str = "gpt-4.1"
     openai_embed_model: str = "text-embedding-3-large"
     groq_decomp_model: str = "llama-3.3-70b-versatile"
-    # Cross-encoder reranker (runs locally, no API cost). ms-marco-MiniLM-L-6-v2
+    # Cross-encoder reranker (runs locally, no API cost). ms-marco-MiniLM-L6-v2
     # (~22M params) over bge-reranker-base (~278M params) -- the larger model
     # measured at 13-22s of CPU inference for 24-30 candidates in production,
     # the dominant end-to-end latency cost by a wide margin.
-    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # NOTE: must be the canonical repo id "ms-marco-MiniLM-L6-v2" (no hyphen
+    # between L and 6) -- "ms-marco-MiniLM-L-6-v2" (hyphenated) is a HF Hub
+    # redirect/alias to this same repo, and current transformers/huggingface_hub
+    # releases fail AutoConfig resolution through that redirect (confirmed live:
+    # a fresh `pip install -e .` today resolves transformers==5.13.0, which
+    # raises "Unrecognized model... should have a model_type key" for the
+    # hyphenated alias even though the config.json is valid -- the canonical
+    # non-hyphenated id loads correctly on the exact same library versions).
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
+    # Live traces confirmed reranking at ~43-47% of total request latency.
+    # ONNX int8 dynamic quantization only pays off once reranker_batch_size
+    # (below) keeps candidate batches length-homogeneous -- verified live with
+    # both fixes together: rerank_ms dropped from ~2.1-2.9s to ~0.8-1.0s, no
+    # score/rank-order change (unit tests + isolated diff check), and the
+    # LLM-judge eval harness (tests/e2e/test_eval_fixture.py) showed the exact
+    # same failures with quantization on vs off -- all pre-existing/test-timing
+    # issues, none attributable to the reranker backend. Explicit rollback
+    # toggle either way -- flip via env var alone, no code deploy needed.
+    # avx2 (not avx512_vnni, what's pre-published upstream) is the safe
+    # default -- avx512_vnni needs recent server-class Intel CPUs and would be
+    # the wrong choice on a typical dev machine or generic cloud VM.
+    reranker_onnx_quantized: bool = True
+    reranker_onnx_quantization_config: str = "avx2"
+    # CrossEncoder.predict() already sorts candidates by length internally, but
+    # only within a single batch -- with the default batch_size=32 and our
+    # top_k always <=20, every request's candidates land in one batch anyway,
+    # so the sort has no effect and one long review pads every candidate in
+    # the request to its length. Confirmed live: dropping batch_size to 8 cut
+    # rerank_ms by 2.5-4x on mixed-length candidates (e.g. 20 short + 4 long),
+    # for both the torch and onnx-quantized backends, with rank order and
+    # scores unchanged (max diff ~1e-6, floating-point noise from padding).
+    reranker_batch_size: int = 8
 
     # Embeddings
     embedding_dim: int = 3072

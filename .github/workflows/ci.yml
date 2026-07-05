@@ -29,8 +29,23 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+      - run: pip install --upgrade pip wheel
       - run: pip install pip-audit bandit
-      - run: pip-audit
+      # Ignored, no fix available for our constraints as of this writing --
+      # revisit when upstream ships one:
+      #   - PYSEC-2025-217 / CVE-2026-1839 / CVE-2026-4372 (transformers):
+      #     optimum[onnxruntime] (even its latest release) caps transformers
+      #     below 5.0, and CVE-2026-1839/CVE-2026-4372 are only fixed in
+      #     5.0.0rc3/5.3.0; PYSEC-2025-217 (X-CLIP checkpoint RCE) has no fix
+      #     version in the advisory database at all, so this would fail on
+      #     any transformers release, 4.x or 5.x, with or without optimum.
+      #   - PYSEC-2026-597 (nltk): no fix version in the advisory database.
+      - run: >
+          pip-audit
+          --ignore-vuln PYSEC-2025-217
+          --ignore-vuln CVE-2026-1839
+          --ignore-vuln CVE-2026-4372
+          --ignore-vuln PYSEC-2026-597
       - run: bandit -r src -ll
 
   test:
@@ -65,8 +80,14 @@ jobs:
 
       qdrant:
         image: qdrant/qdrant:v1.10.0
+        # qdrant/qdrant has neither curl nor wget -- a curl-based health-cmd
+        # can never succeed and always times out as "unhealthy" (confirmed
+        # live: qdrant's own logs show it fully up with zero errors while
+        # the healthcheck alone fails). bash is present, so a plain TCP
+        # connect via /dev/tcp is enough to confirm the port is accepting
+        # connections.
         options: >-
-          --health-cmd "curl -sf http://localhost:6333/healthz"
+          --health-cmd "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10

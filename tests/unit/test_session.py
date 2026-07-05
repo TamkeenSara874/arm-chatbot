@@ -243,56 +243,56 @@ class TestMaybeTriggerSummary:
         db = self._make_count_db(count=10)
         llm_client = MagicMock()
 
-        with patch("src.core.session.asyncio") as mock_asyncio:
+        with patch("src.core.session.fire_and_forget") as mock_fire_and_forget:
             await maybe_trigger_summary(
                 session_id=uuid.uuid4(),
                 db_session=db,
                 llm_client=llm_client,
                 summary_trigger=50,
             )
-            mock_asyncio.create_task.assert_not_called()
+            mock_fire_and_forget.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_does_not_trigger_when_summary_already_exists(self) -> None:
         db = self._make_count_db(count=60, summary="Existing summary.")
         llm_client = MagicMock()
 
-        with patch("src.core.session.asyncio") as mock_asyncio:
+        with patch("src.core.session.fire_and_forget") as mock_fire_and_forget:
             await maybe_trigger_summary(
                 session_id=uuid.uuid4(),
                 db_session=db,
                 llm_client=llm_client,
                 summary_trigger=50,
             )
-            mock_asyncio.create_task.assert_not_called()
+            mock_fire_and_forget.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_triggers_summary_task_when_count_at_threshold(self) -> None:
         db = self._make_count_db(count=50, summary=None)
         llm_client = MagicMock()
 
-        with patch("src.core.session.asyncio") as mock_asyncio:
+        with patch("src.core.session.fire_and_forget") as mock_fire_and_forget:
             await maybe_trigger_summary(
                 session_id=uuid.uuid4(),
                 db_session=db,
                 llm_client=llm_client,
                 summary_trigger=50,
             )
-            mock_asyncio.create_task.assert_called_once()
+            mock_fire_and_forget.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_triggers_summary_task_when_count_above_threshold(self) -> None:
         db = self._make_count_db(count=75, summary=None)
         llm_client = MagicMock()
 
-        with patch("src.core.session.asyncio") as mock_asyncio:
+        with patch("src.core.session.fire_and_forget") as mock_fire_and_forget:
             await maybe_trigger_summary(
                 session_id=uuid.uuid4(),
                 db_session=db,
                 llm_client=llm_client,
                 summary_trigger=50,
             )
-            mock_asyncio.create_task.assert_called_once()
+            mock_fire_and_forget.assert_called_once()
 
 
 class TestGenerateAndSaveSummary:
