@@ -120,6 +120,11 @@ class ReviewChunkMeta(Base):
     )
     # True when createdAt was unparseable and datetime.now() was used as fallback
     date_inferred: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    # Which ingest_worker.PIPELINE_VERSION produced this row -- lets a resumed/retried
+    # ingest job skip re-chunking, re-extracting entities, and re-embedding a review
+    # that's already been fully processed under the CURRENT version, while still
+    # reprocessing rows left over from an older version after a pipeline change.
+    pipeline_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -142,6 +147,9 @@ class IngestJob(Base):
     total_reviews: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_chunks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     skipped_empty: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Reviews skipped because a prior (failed/retried) attempt at this same job's
+    # file already fully processed them under the current PIPELINE_VERSION.
+    skipped_already_processed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

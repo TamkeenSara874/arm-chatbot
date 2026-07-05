@@ -74,6 +74,7 @@ export interface IngestJobResponse {
   total_reviews?: number | null;
   total_chunks?: number | null;
   skipped_empty?: number | null;
+  skipped_already_processed?: number | null;
   error_message?: string | null;
 }
 
