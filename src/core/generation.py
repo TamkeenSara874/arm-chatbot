@@ -112,6 +112,7 @@ def build_generation_prompt(
     session_context: str,
     corrections: str,
     evidence: str,
+    unverified_note: str = "None",
     sub_queries: list[str] | None = None,
     entity_counts: dict | None = None,
     source_breakdown: dict | None = None,
@@ -126,6 +127,7 @@ def build_generation_prompt(
             sub_queries=json.dumps(sub_queries or []),
             session_context=session_context,
             corrections=corrections,
+            unverified_note=unverified_note,
             entity_counts=json.dumps(entity_counts or {}),
             source_breakdown=json.dumps(source_breakdown or {}),
             recency_spike=str(recency_spike).lower(),
@@ -137,6 +139,7 @@ def build_generation_prompt(
         query=query,
         session_context=session_context,
         corrections=corrections,
+        unverified_note=unverified_note,
         evidence=evidence,
     )
 

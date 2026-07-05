@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import structlog
@@ -16,6 +17,12 @@ CORRECTION_COLLECTION = "correction_embeddings"
 CONSENSUS_THRESHOLD = 3
 
 
+@dataclass
+class CorrectionMatch:
+    text: str
+    is_consensus: bool
+
+
 async def find_correction(
     query: str,
     restaurant_id: int,
@@ -23,11 +30,18 @@ async def find_correction(
     embedder: BaseEmbedder,
     vector_store: BaseVectorStore,
     threshold: float = 0.85,
-) -> str | None:
+) -> CorrectionMatch | None:
     """Search for a stored correction that matches the current query and context.
 
-    Returns the corrected_response text if a match is found above `threshold`
+    Returns a CorrectionMatch (text + whether correction_count has reached
+    CONSENSUS_THRESHOLD distinct flags) if a match is found above `threshold`
     with a compatible intent and matching restaurant. Returns None otherwise.
+
+    is_consensus is the caller's signal for how much weight to give the
+    correction: a single flag isn't yet confirmed and shouldn't override real
+    review evidence the same way a multi-session consensus should -- see how
+    chat.py routes this into either the `corrections` (ground truth) or
+    `unverified_note` (informational only) generation-prompt field.
 
     Intent cross-check prevents a correction for one query type from being
     incorrectly applied to a different query type even if the text is similar.
@@ -56,7 +70,12 @@ async def find_correction(
                 score=result.score,
             )
             continue
-        return p.get("corrected_response")
+        corrected_response = p.get("corrected_response")
+        if not corrected_response:
+            continue
+        return CorrectionMatch(
+            text=corrected_response, is_consensus=bool(p.get("is_consensus", False))
+        )
 
     return None
 

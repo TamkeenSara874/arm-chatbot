@@ -64,6 +64,7 @@ class TestBuildSessionContext:
         store = _make_vector_store()
         result = await build_session_context(
             session_id=uuid.uuid4(),
+            restaurant_id=1,
             current_query="What is best?",
             db_session=db,
             vector_store=store,
@@ -82,6 +83,7 @@ class TestBuildSessionContext:
         store = _make_vector_store()
         result = await build_session_context(
             session_id=uuid.uuid4(),
+            restaurant_id=1,
             current_query="Tell me more",
             db_session=db,
             vector_store=store,
@@ -96,6 +98,7 @@ class TestBuildSessionContext:
         store = _make_vector_store()
         result = await build_session_context(
             session_id=uuid.uuid4(),
+            restaurant_id=1,
             current_query="Tell me more",
             db_session=db,
             vector_store=store,
@@ -121,6 +124,7 @@ class TestBuildSessionContext:
         store = _make_vector_store(ann_results=ann)
         result = await build_session_context(
             session_id=uuid.uuid4(),
+            restaurant_id=1,
             current_query="more questions",
             db_session=db,
             vector_store=store,
@@ -138,6 +142,7 @@ class TestBuildSessionContext:
         store = _make_vector_store()
         result = await build_session_context(
             session_id=uuid.uuid4(),
+            restaurant_id=1,
             current_query="query",
             db_session=db,
             vector_store=store,
@@ -157,6 +162,7 @@ class TestBuildSessionContext:
 
         result = await build_session_context(
             session_id=uuid.uuid4(),
+            restaurant_id=1,
             current_query="more?",
             db_session=db,
             vector_store=store,
@@ -173,6 +179,7 @@ class TestAnnNotInRecent:
 
         old_content = "An old question about pasta from weeks ago."
         recent_content = "What is the best dish?"
+        session_id = uuid.uuid4()
 
         messages = [_make_message("user", recent_content)]
         db = _make_db_session(messages=messages)
@@ -181,13 +188,17 @@ class TestAnnNotInRecent:
             SearchResult(
                 id="old1",
                 score=0.91,
-                payload={"role": "user", "content": old_content},
+                # Same session_id as the call below -- this test is about
+                # same-session ANN surfacing, not the cross-session age
+                # filtering build_session_context also does now.
+                payload={"role": "user", "content": old_content, "session_id": str(session_id)},
             )
         ]
         store = _make_vector_store(ann_results=ann)
 
         result = await build_session_context(
-            session_id=uuid.uuid4(),
+            session_id=session_id,
+            restaurant_id=1,
             current_query="Tell me about pasta",
             db_session=db,
             vector_store=store,
@@ -202,6 +213,7 @@ class TestAnnNotInRecent:
         from src.services.vector.base import SearchResult
 
         old_content = "I asked about the service last week."
+        session_id = uuid.uuid4()
         messages = [_make_message("user", "current question")]
         db = _make_db_session(messages=messages)
         embedder = _make_embedder()
@@ -209,13 +221,14 @@ class TestAnnNotInRecent:
             SearchResult(
                 id="old2",
                 score=0.88,
-                payload={"role": "user", "content": old_content},
+                payload={"role": "user", "content": old_content, "session_id": str(session_id)},
             )
         ]
         store = _make_vector_store(ann_results=ann)
 
         result = await build_session_context(
-            session_id=uuid.uuid4(),
+            session_id=session_id,
+            restaurant_id=1,
             current_query="service question",
             db_session=db,
             vector_store=store,
@@ -223,6 +236,139 @@ class TestAnnNotInRecent:
         )
 
         assert "Relevant past exchanges" in result
+
+
+class TestCrossSessionMemory:
+    """Coverage for widening build_session_context's ANN search from
+
+    session_id-only to restaurant_id (so a relevant exchange from a
+    different, past session surfaces too), plus the age labeling and
+    staleness cutoff that come with searching beyond one session's lifetime.
+    """
+
+    @pytest.mark.asyncio
+    async def test_recent_cross_session_turn_gets_age_label(self) -> None:
+        from src.services.vector.base import SearchResult
+
+        other_session_id = uuid.uuid4()
+        content = "Last time I asked, the ambiance was described as charming."
+        five_days_ago = datetime.now(tz=UTC).timestamp() - 5 * 86400
+
+        messages = [_make_message("user", "current question")]
+        db = _make_db_session(messages=messages)
+        embedder = _make_embedder()
+        ann = [
+            SearchResult(
+                id="cross1",
+                score=0.9,
+                payload={
+                    "role": "user",
+                    "content": content,
+                    "session_id": str(other_session_id),
+                    "created_at_ts": five_days_ago,
+                },
+            )
+        ]
+        store = _make_vector_store(ann_results=ann)
+
+        result = await build_session_context(
+            session_id=uuid.uuid4(),
+            restaurant_id=1,
+            current_query="how is the ambiance?",
+            db_session=db,
+            vector_store=store,
+            embedder=embedder,
+        )
+
+        assert content in result
+        assert "5 day(s) ago" in result
+
+    @pytest.mark.asyncio
+    async def test_cross_session_turn_older_than_cutoff_is_excluded(self) -> None:
+        from src.core.session import MAX_CROSS_SESSION_AGE_DAYS
+        from src.services.vector.base import SearchResult
+
+        other_session_id = uuid.uuid4()
+        content = "Ancient conversation about the menu."
+        too_old = datetime.now(tz=UTC).timestamp() - (MAX_CROSS_SESSION_AGE_DAYS + 1) * 86400
+
+        messages = [_make_message("user", "current question")]
+        db = _make_db_session(messages=messages)
+        embedder = _make_embedder()
+        ann = [
+            SearchResult(
+                id="cross2",
+                score=0.9,
+                payload={
+                    "role": "user",
+                    "content": content,
+                    "session_id": str(other_session_id),
+                    "created_at_ts": too_old,
+                },
+            )
+        ]
+        store = _make_vector_store(ann_results=ann)
+
+        result = await build_session_context(
+            session_id=uuid.uuid4(),
+            restaurant_id=1,
+            current_query="what's on the menu?",
+            db_session=db,
+            vector_store=store,
+            embedder=embedder,
+        )
+
+        assert content not in result
+
+    @pytest.mark.asyncio
+    async def test_cross_session_turn_missing_timestamp_is_excluded(self) -> None:
+        from src.services.vector.base import SearchResult
+
+        content = "A turn with no timestamp at all."
+        messages = [_make_message("user", "current question")]
+        db = _make_db_session(messages=messages)
+        embedder = _make_embedder()
+        ann = [
+            SearchResult(
+                id="cross3",
+                score=0.9,
+                payload={
+                    "role": "user",
+                    "content": content,
+                    "session_id": str(uuid.uuid4()),
+                },
+            )
+        ]
+        store = _make_vector_store(ann_results=ann)
+
+        result = await build_session_context(
+            session_id=uuid.uuid4(),
+            restaurant_id=1,
+            current_query="query",
+            db_session=db,
+            vector_store=store,
+            embedder=embedder,
+        )
+
+        assert content not in result
+
+    @pytest.mark.asyncio
+    async def test_search_filters_by_restaurant_id_not_session_id(self) -> None:
+        embedder = _make_embedder()
+        store = _make_vector_store(ann_results=[])
+        db = _make_db_session(messages=[])
+
+        await build_session_context(
+            session_id=uuid.uuid4(),
+            restaurant_id=42,
+            current_query="query",
+            db_session=db,
+            vector_store=store,
+            embedder=embedder,
+        )
+
+        _, kwargs = store.search.call_args
+        assert kwargs["filters"] == {"restaurant_id": 42}
 
 
 class TestMaybeTriggerSummary:
@@ -389,6 +535,7 @@ class TestStoreSessionTurn:
         store = _make_vector_store()
         await store_session_turn(
             session_id=uuid.uuid4(),
+            restaurant_id=1,
             role="user",
             content="Hello!",
             embedder=embedder,
@@ -397,12 +544,33 @@ class TestStoreSessionTurn:
         store.upsert.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_payload_includes_restaurant_id(self) -> None:
+        """Regression guard for cross-session memory: build_session_context
+
+        filters by restaurant_id, so every stored turn must carry it.
+        """
+        embedder = _make_embedder()
+        store = _make_vector_store()
+        await store_session_turn(
+            session_id=uuid.uuid4(),
+            restaurant_id=7,
+            role="user",
+            content="Hello!",
+            embedder=embedder,
+            vector_store=store,
+        )
+        _, args, _ = store.upsert.mock_calls[0]
+        points = args[1]
+        assert points[0]["payload"]["restaurant_id"] == 7
+
+    @pytest.mark.asyncio
     async def test_failure_does_not_raise(self) -> None:
         embedder = _make_embedder()
         store = MagicMock()
         store.upsert = AsyncMock(side_effect=RuntimeError("Qdrant unavailable"))
         await store_session_turn(
             session_id=uuid.uuid4(),
+            restaurant_id=1,
             role="user",
             content="Hello!",
             embedder=embedder,
