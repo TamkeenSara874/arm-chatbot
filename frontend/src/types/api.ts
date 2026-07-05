@@ -77,10 +77,6 @@ export interface IngestJobResponse {
   error_message?: string | null;
 }
 
-export interface RestaurantListResponse {
-  restaurant_ids: number[];
-}
-
 export interface ReportRequest {
   session_id: string;
   restaurant_id: number;

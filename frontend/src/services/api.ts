@@ -4,7 +4,6 @@ import type {
   IngestJobResponse,
   InsightsReport,
   ReportRequest,
-  RestaurantListResponse,
   SessionResponse,
 } from '../types/api';
 import { useChatStore } from '../store/chatStore';
@@ -33,10 +32,10 @@ export function clearJwt(): void {
   localStorage.removeItem(JWT_KEY);
 }
 
-// Clearing the JWT and dropping restaurantId forces App's WelcomeScreen/
-// RestaurantSelector back into view -- the same reset handleLogout() already
-// does -- so an expired/missing token always routes the user back through a
-// real login instead of silently continuing under the wrong credentials.
+// Clearing the JWT and dropping restaurantId forces App's LoginPage back into
+// view -- the same reset handleLogout() already does -- so an expired/missing
+// token always routes the user back through a real login instead of silently
+// continuing under the wrong credentials.
 export function resetToLogin(): void {
   clearJwt();
   useChatStore.getState().setRestaurantId(null);
@@ -84,12 +83,13 @@ export function getRequiredJwt(): string {
 }
 
 export const api = {
-  getRestaurants: () => request<RestaurantListResponse>('/api/v1/restaurants'),
-
-  login: async (restaurantId: number): Promise<void> => {
+  login: async (restaurantId: number, restaurantKey: string): Promise<void> => {
     const res = await request<{ access_token: string }>(
       '/api/v1/auth/token',
-      { method: 'POST', body: JSON.stringify({ restaurant_id: restaurantId }) },
+      {
+        method: 'POST',
+        body: JSON.stringify({ restaurant_id: restaurantId, restaurant_key: restaurantKey }),
+      },
     );
     storeJwt(res.access_token);
   },

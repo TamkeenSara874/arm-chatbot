@@ -2,8 +2,8 @@ import { FileBarChart, LogOut, MessageSquare, Plus } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { ChatWindow } from './components/ChatWindow';
 import { EvidencePanel } from './components/EvidencePanel';
+import { LoginPage } from './components/LoginPage';
 import { ReportView } from './components/ReportView';
-import { RestaurantSelector } from './components/RestaurantSelector';
 import { useSessionHistory } from './hooks/useChat';
 import { clearJwt } from './services/api';
 import { useChatStore } from './store/chatStore';
@@ -36,13 +36,6 @@ function useHistoryRestore() {
   }, [error, sessionId, setSessionId]);
 }
 
-const EXAMPLE_QUESTIONS = [
-  'What do customers praise most?',
-  'What are the top complaints?',
-  'How many positive reviews do I have?',
-  'What should I improve based on feedback?',
-];
-
 function AioLogo() {
   return (
     <div className="flex items-center gap-2">
@@ -56,43 +49,6 @@ function AioLogo() {
   );
 }
 
-function WelcomeScreen() {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-8 px-6 py-16 text-center">
-      <div className="space-y-3">
-        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-aio-400 to-aio-600 shadow-lg">
-          <MessageSquare size={26} className="text-white" />
-        </div>
-        <h1 className="text-2xl font-bold text-gray-900">ARM Review Chatbot</h1>
-        <p className="max-w-md text-sm text-gray-500 leading-relaxed">
-          Ask plain-English questions about your customer reviews and get instant,
-          evidence-backed answers from real feedback.
-        </p>
-      </div>
-
-      <div className="w-full max-w-sm space-y-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">
-          Select a restaurant to begin
-        </p>
-        <RestaurantSelector />
-      </div>
-
-      <div className="w-full max-w-lg space-y-2">
-        <p className="text-xs text-gray-400">Try asking</p>
-        <div className="flex flex-wrap justify-center gap-2">
-          {EXAMPLE_QUESTIONS.map((q) => (
-            <span
-              key={q}
-              className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm"
-            >
-              {q}
-            </span>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default function App() {
   const [showReport, setShowReport] = useState(false);
@@ -104,6 +60,10 @@ export default function App() {
   function handleLogout() {
     clearJwt();
     setRestaurantId(null);
+  }
+
+  if (restaurantId == null) {
+    return <LoginPage />;
   }
 
   return (
@@ -120,37 +80,35 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-2">
-          <RestaurantSelector />
+          <span className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-600">
+            Restaurant #{restaurantId}
+          </span>
 
-          {restaurantId != null && (
-            <>
-              <button
-                onClick={newConversation}
-                title="New conversation"
-                className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 transition hover:border-aio-300 hover:text-aio-500"
-              >
-                <Plus size={13} />
-                New Chat
-              </button>
+          <button
+            onClick={newConversation}
+            title="New conversation"
+            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 transition hover:border-aio-300 hover:text-aio-500"
+          >
+            <Plus size={13} />
+            New Chat
+          </button>
 
-              <button
-                onClick={() => setShowReport(true)}
-                className="flex items-center gap-1.5 rounded-lg bg-aio-500 px-3 py-2 text-xs font-medium text-white transition hover:bg-aio-600"
-              >
-                <FileBarChart size={13} />
-                Report
-              </button>
+          <button
+            onClick={() => setShowReport(true)}
+            className="flex items-center gap-1.5 rounded-lg bg-aio-500 px-3 py-2 text-xs font-medium text-white transition hover:bg-aio-600"
+          >
+            <FileBarChart size={13} />
+            Report
+          </button>
 
-              <button
-                onClick={handleLogout}
-                title="Log out and switch restaurant"
-                className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 transition hover:border-red-300 hover:text-red-500"
-              >
-                <LogOut size={13} />
-                Log Out
-              </button>
-            </>
-          )}
+          <button
+            onClick={handleLogout}
+            title="Log out and switch restaurant"
+            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 transition hover:border-red-300 hover:text-red-500"
+          >
+            <LogOut size={13} />
+            Log Out
+          </button>
         </div>
       </header>
 
@@ -160,7 +118,7 @@ export default function App() {
             showEvidencePanel ? 'mr-80' : ''
           }`}
         >
-          {restaurantId == null ? <WelcomeScreen /> : <ChatWindow />}
+          <ChatWindow />
         </div>
 
         {showEvidencePanel && <EvidencePanel />}

@@ -147,6 +147,25 @@ class IngestJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class RestaurantCredential(Base):
+    """Per-restaurant secret required to mint a JWT for that restaurant_id.
+
+    Closes a real gap: POST /auth/token previously minted a token for ANY
+    restaurant_id behind only the single shared API_KEY -- which is baked
+    into the public frontend bundle (Vite inlines VITE_* vars at build time),
+    so anyone loading the frontend could extract it and obtain a JWT scoped
+    to any restaurant. Only the SHA-256 hash is stored; the plaintext key is
+    shown once at provisioning time (scripts/create_restaurant_credential.py)
+    and never persisted -- see src/utils/restaurant_auth.py.
+    """
+
+    __tablename__ = "restaurant_credential"
+
+    restaurant_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class IngestManifest(Base):
     """Tracks the last successfully seeded state of each Qdrant collection.
 
