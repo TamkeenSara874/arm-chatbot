@@ -153,11 +153,38 @@ class IngestJobResponse(BaseModel):
     total_reviews: int | None = None
     total_chunks: int | None = None
     skipped_empty: int | None = None
+    skipped_already_processed: int | None = None
     error_message: str | None = None
 
 
 class RestaurantListResponse(BaseModel):
     restaurant_ids: list[int]
+
+
+class ReviewIngestRequest(BaseModel):
+    """One review pushed live by a source system, e.g. the moment it's posted
+    or edited -- the incremental counterpart to the batch /ingest file upload.
+
+    external_review_id must be a stable identifier from the source system
+    (its own review ID) so a repeat call for the same review is a genuine
+    update rather than a duplicate: review_id is derived deterministically
+    from (restaurant_id, external_review_id).
+    """
+
+    restaurant_id: int
+    external_review_id: str = Field(..., min_length=1, max_length=255)
+    review: str = Field(..., max_length=10000)
+    rating: float | None = Field(None, ge=1, le=5)
+    username: str | None = Field(None, max_length=255)
+    source: str | None = Field(None, max_length=100)
+    created_at: str | None = None
+    sentiment: str | None = None
+
+
+class ReviewIngestResponse(BaseModel):
+    review_id: str
+    status: str
+    chunks_written: int
 
 
 class ReportRequest(BaseModel):

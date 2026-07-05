@@ -143,6 +143,7 @@ class IngestTrace:
     total_reviews: int = 0
     total_chunks: int = 0
     skipped_empty: int = 0
+    skipped_already_processed: int = 0
 
     @property
     def total_ms(self) -> float:
@@ -183,6 +184,7 @@ class IngestTrace:
             "total_reviews": self.total_reviews,
             "total_chunks": self.total_chunks,
             "skipped_empty": self.skipped_empty,
+            "skipped_already_processed": self.skipped_already_processed,
         }
 
         logger.info("ingest_trace", **record)

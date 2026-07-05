@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     # Rate limiting (per API key)
     rate_limit_chat: str = "10/minute"
     rate_limit_ingest: str = "5/minute"
+    # Single-review live ingestion is a lightweight, high-frequency call (one
+    # review at a time, not a whole file) -- a much looser limit than the
+    # batch file upload above.
+    rate_limit_ingest_review: str = "60/minute"
     rate_limit_correct: str = "20/minute"
     rate_limit_read: str = "60/minute"
 

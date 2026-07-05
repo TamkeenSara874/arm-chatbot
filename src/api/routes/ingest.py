@@ -28,14 +28,19 @@ from src.api.dependencies import (
 )
 from src.config import get_settings
 from src.models.db_entities import IngestJob, ReviewChunkMeta
-from src.models.schemas import IngestJobResponse, RestaurantListResponse
+from src.models.schemas import (
+    IngestJobResponse,
+    RestaurantListResponse,
+    ReviewIngestRequest,
+    ReviewIngestResponse,
+)
 from src.services.cache import RedisCache
 from src.services.embedding.base import BaseEmbedder
 from src.services.llm.base import BaseLLMClient
 from src.services.vector.base import BaseVectorStore
 from src.utils.background import fire_and_forget
 from src.utils.security import check_file_upload
-from src.workers.ingest_worker import run_ingest_job
+from src.workers.ingest_worker import ingest_single_review, run_ingest_job
 
 logger = structlog.get_logger()
 
@@ -129,6 +134,47 @@ async def ingest_reviews(
     )
 
 
+@router.post("/ingest/review", response_model=ReviewIngestResponse, status_code=status.HTTP_200_OK)
+@limiter.limit(settings.rate_limit_ingest_review)
+async def ingest_review(
+    request: Request,
+    body: ReviewIngestRequest,
+    _: AuthToken,
+    db: DbSession,
+    llm_client: SimpleClient,
+    embedder: Embedder,
+    vector_store: VectorStore,
+    cache: Cache,
+) -> ReviewIngestResponse:
+    """Ingest, or update, exactly one review the moment a source system has
+    it -- the push-based counterpart to the batch file upload above, run
+    inline (not fire_and_forget) since one review's chunk/extract/embed/
+    upsert work is fast enough for a normal request-response cycle.
+    """
+    result = await ingest_single_review(
+        restaurant_id=body.restaurant_id,
+        external_review_id=body.external_review_id,
+        review_text=body.review,
+        rating=body.rating,
+        username=body.username,
+        source=body.source,
+        created_at_raw=body.created_at,
+        sentiment_label=body.sentiment,
+        settings=settings,
+        db_session=db,
+        embedder=embedder,
+        vector_store=vector_store,
+        reviews_collection=settings.qdrant_collection_reviews,
+        llm_client=llm_client,
+        cache=cache,
+    )
+    return ReviewIngestResponse(
+        review_id=result.review_id,
+        status=result.status,
+        chunks_written=result.chunks_written,
+    )
+
+
 @router.get("/ingest/{job_id}/status", response_model=IngestJobResponse)
 @limiter.limit(settings.rate_limit_read)
 async def get_ingest_status(
@@ -148,6 +194,7 @@ async def get_ingest_status(
         total_reviews=job.total_reviews,
         total_chunks=job.total_chunks,
         skipped_empty=job.skipped_empty,
+        skipped_already_processed=job.skipped_already_processed,
         error_message=job.error_message,
     )
 
