@@ -3,14 +3,6 @@ import { api } from '../services/api';
 import { useChatStore } from '../store/chatStore';
 import type { ChatMessage, CorrectionRequest, ReportRequest } from '../types/api';
 
-export function useRestaurants() {
-  return useQuery({
-    queryKey: ['restaurants'],
-    queryFn: () => api.getRestaurants(),
-    staleTime: 60_000,
-  });
-}
-
 export function useCreateSession() {
   const setSessionId = useChatStore((s) => s.setSessionId);
   const queryClient = useQueryClient();

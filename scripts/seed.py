@@ -29,13 +29,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from src.config import get_settings
-from src.models.db_entities import IngestJob, IngestManifest
+from src.models.db_entities import IngestJob, IngestManifest, RestaurantCredential
 from src.services.cache import RedisCache
 from src.services.embedding.factory import create_embedder
 from src.services.llm.factory import create_simple_client
 from src.services.vector.factory import create_vector_store
 from src.services.vector.qdrant_store import ensure_collections
 from src.utils.logging import configure_logging
+from src.utils.restaurant_auth import generate_restaurant_key, hash_restaurant_key
 from src.workers.ingest_worker import PIPELINE_VERSION, run_ingest_job
 
 DATASET_PATH = Path(__file__).parent.parent / "dataset" / "dataset.json"
@@ -131,6 +132,36 @@ async def _run_once(
         return updated_job.total_reviews or 0
 
 
+async def _ensure_dev_restaurant_credential(restaurant_id: int) -> None:
+    """Create a restaurant_credential row for local dev if one doesn't exist yet.
+
+    Deliberately create-if-missing, not overwrite-on-every-run: unlike
+    scripts/create_restaurant_credential.py (which reissues on demand), this
+    runs on every `docker compose up`, and rotating the key each time would
+    invalidate whatever a developer already has configured in their local
+    frontend .env.
+    """
+    settings = get_settings()
+    engine = create_async_engine(settings.database_url)
+    async with AsyncSession(engine) as session:
+        existing = await session.get(RestaurantCredential, restaurant_id)
+        if existing is not None:
+            await engine.dispose()
+            return
+        key = generate_restaurant_key()
+        session.add(
+            RestaurantCredential(restaurant_id=restaurant_id, key_hash=hash_restaurant_key(key))
+        )
+        await session.commit()
+    await engine.dispose()
+    logger.info(
+        "dev_restaurant_credential_created",
+        restaurant_id=restaurant_id,
+        restaurant_key=key,
+        note="Set this as VITE_RESTAURANT_KEY in frontend/.env for local login",
+    )
+
+
 async def seed(force: bool = False) -> None:
     settings = get_settings()
     configure_logging(log_level=settings.log_level, debug=settings.debug)
@@ -147,6 +178,8 @@ async def seed(force: bool = False) -> None:
     # before the backend (whose lifespan normally creates them), so create
     # them here too -- idempotent, safe if the backend already did it.
     await ensure_collections(settings)
+
+    await _ensure_dev_restaurant_credential(RESTAURANT_ID)
 
     engine = create_async_engine(settings.database_url)
 
