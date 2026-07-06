@@ -18,8 +18,6 @@ from typing import Annotated
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from openai import AsyncOpenAI
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -36,6 +34,7 @@ from src.api.dependencies import (
     get_summary_client,
     get_vector_store,
 )
+from src.api.rate_limit import limiter
 from src.config import get_settings
 from src.core.correction import find_correction, store_correction
 from src.core.decomposition import decompose_query
@@ -91,7 +90,6 @@ from src.utils.tracing import RequestTrace
 
 logger = structlog.get_logger()
 
-limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
 settings = get_settings()

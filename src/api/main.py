@@ -9,9 +9,8 @@ except ImportError:
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 from src.config import get_settings
 from src.utils.logging import configure_logging
@@ -103,11 +102,11 @@ def create_app() -> FastAPI:
         max_age=600,
     )
 
-    # Rate limiting (per API key via Redis, shared across workers)
-    limiter = Limiter(
-        key_func=get_remote_address,
-        storage_uri=settings.redis_url,  # shared across workers
-    )
+    # Rate limiting -- one shared, Redis-backed limiter (src/api/rate_limit.py),
+    # keyed by restaurant_id when a JWT is present, else remote IP. Every route
+    # file imports this same instance rather than constructing its own.
+    from src.api.rate_limit import limiter
+
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
