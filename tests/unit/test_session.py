@@ -8,6 +8,7 @@ import pytest
 
 from src.core.session import (
     _generate_and_save_summary,
+    build_recent_turns_context,
     build_session_context,
     maybe_trigger_summary,
     store_session_turn,
@@ -54,6 +55,44 @@ def _make_vector_store(ann_results=None) -> MagicMock:
     store.search = AsyncMock(return_value=ann_results or [])
     store.upsert = AsyncMock()
     return store
+
+
+class TestBuildRecentTurnsContext:
+    """Regression coverage for a real bug: this context previously had no
+    token cap, so a couple of long complex-tier answers in the last few
+    turns could balloon a single decomposition call to tens of thousands of
+    tokens -- confirmed live at 22k+ tokens, which drove huge latency and
+    misclassified a clearly out-of-scope question."""
+
+    @pytest.mark.asyncio
+    async def test_empty_history_returns_empty_string(self) -> None:
+        db = _make_db_session(messages=[])
+        result = await build_recent_turns_context(session_id=uuid.uuid4(), db_session=db)
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_includes_recent_messages(self) -> None:
+        messages = [
+            _make_message("user", "What is your best dish?"),
+            _make_message("assistant", "The biryani is highly praised."),
+        ]
+        db = _make_db_session(messages=messages)
+        result = await build_recent_turns_context(session_id=uuid.uuid4(), db_session=db)
+        assert "What is your best dish?" in result
+        assert "The biryani is highly praised." in result
+
+    @pytest.mark.asyncio
+    async def test_long_turns_are_capped_to_token_budget(self) -> None:
+        long_answer = "word " * 5000  # far more than any reasonable token budget
+        messages = [
+            _make_message("user", "How can I improve?"),
+            _make_message("assistant", long_answer),
+        ]
+        db = _make_db_session(messages=messages)
+        result = await build_recent_turns_context(
+            session_id=uuid.uuid4(), db_session=db, token_budget=100
+        )
+        assert estimate_tokens(result) <= 100
 
 
 class TestBuildSessionContext:

@@ -43,6 +43,12 @@ chat_response_simple:
       that this isn't something reviews can measure. If there is real evidence of a review sentiment or
       volume trend, you may offer that as a directional proxy, clearly distinguishing it from the metric
       actually asked about.
+    - SESSION CONTEXT IS SUPPLEMENTARY, NOT AUTHORITATIVE: "Context from previous conversation" shows
+      earlier turns, provided only for continuity -- resolving "that"/"it" and similar references in the
+      current question. The question you must answer is exactly the one given above. If it's unrelated
+      to the previous turn, answer it on its own terms; never let prior turns pull your answer back
+      toward an earlier topic, and never answer a different question than the one actually asked just
+      because a recent turn covered similar ground.
   user_prompt: |
     Question: {query}
     Context from previous conversation: {session_context}
