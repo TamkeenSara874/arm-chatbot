@@ -1,0 +1,58 @@
+name: CD Production
+
+# Builds and pushes container images on a version tag (v1.2.3). Does NOT
+# deploy anywhere yet -- no cloud target has been chosen (see docs/runbook.md).
+# Mirrors cd-staging.yml's build step; production promotion should be a
+# deliberate, tagged release, not every merge to main.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BASE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build and push (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: backend
+            dockerfile: infra/docker/backend/Dockerfile
+          - service: frontend
+            dockerfile: infra/docker/frontend/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.IMAGE_BASE }}-${{ matrix.service }}:latest
+            ${{ env.IMAGE_BASE }}-${{ matrix.service }}:${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Deploy target not yet chosen ──────────────────────────────────────────
+  # When one is: add a job here that pulls ghcr.io/<repo>-backend:${{
+  # github.ref_name }} (and -frontend) and deploys it to production, plus a
+  # rollback procedure (redeploy the previous tag). See docs/runbook.md.

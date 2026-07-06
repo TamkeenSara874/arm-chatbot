@@ -1,4 +1,4 @@
-.PHONY: install dev run stop migrate test test-unit lint format audit clean seed
+.PHONY: install dev run stop migrate test test-unit lint format audit clean seed build-backend build-frontend build
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 install:
@@ -45,19 +45,24 @@ audit:
 	pip-audit
 	bandit -r src -ll
 
-# ── Evaluation (fill in evaluation_report.md) ─────────────────────────────────
-eval:
-	python scripts/eval_retrieval.py --k 5
-
-load-test:
-	python scripts/load_test.py --n 50
-
 smoke-test:
 	python scripts/smoke_test.py
 
 # ── Seed & demo ───────────────────────────────────────────────────────────────
 seed:
 	python scripts/seed.py
+
+# ── Deployment (see docs/runbook.md) ──────────────────────────────────────────
+build-backend:
+	docker build -f infra/docker/backend/Dockerfile -t arm-chatbot-backend:local .
+
+# VITE_API_URL defaults to empty (relative /api/v1/... paths); override with
+# `make build-frontend VITE_API_URL=https://your-backend-host` for a real deploy.
+build-frontend:
+	docker build -f infra/docker/frontend/Dockerfile -t arm-chatbot-frontend:local \
+		--build-arg VITE_API_URL=$(VITE_API_URL) .
+
+build: build-backend build-frontend
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 clean:
