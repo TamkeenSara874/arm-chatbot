@@ -13,7 +13,6 @@ import json
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -38,6 +37,7 @@ from src.api.dependencies import (
 )
 from src.api.rate_limit import limiter
 from src.config import get_settings
+from src.core.anomaly import get_anomaly_status
 from src.core.correction import find_correction, store_correction
 from src.core.decomposition import decompose_query
 from src.core.generation import (
@@ -53,6 +53,7 @@ from src.core.guardrail import check_guardrail
 from src.core.ranking import rank_results
 from src.core.report import generate_report
 from src.core.retrieval import RetrievalTiming, build_retrieval_params, hybrid_retrieve
+from src.core.review_stats import PeriodStats, compute_period_stats
 from src.core.semantic_cache import (
     find_cached_response,
     invalidate_cached_response,
@@ -66,6 +67,7 @@ from src.core.session import (
 )
 from src.models.db_entities import ChatMessage, ChatSession, ReviewChunkMeta
 from src.models.schemas import (
+    AnomalyAlertResponse,
     ChatQueryRequest,
     ChatResponseSchema,
     CorrectionRequest,
@@ -122,6 +124,27 @@ async def create_session(
     active_sessions_gauge.inc()
     logger.info("session_created", session_id=str(session.id), restaurant_id=restaurant_id)
     return SessionResponse(session_id=session.id, restaurant_id=session.restaurant_id)
+
+
+@router.get("/alerts", response_model=AnomalyAlertResponse)
+@limiter.limit(settings.rate_limit_read)
+async def get_alerts(
+    request: Request,
+    restaurant_id: RestaurantId,
+    db: DbSession,
+    cache: Cache,
+) -> AnomalyAlertResponse:
+    result = await get_anomaly_status(db, cache, restaurant_id)
+    return AnomalyAlertResponse(
+        detected=result.detected,
+        message=result.message,
+        recent_avg_rating=result.recent_avg_rating,
+        baseline_avg_rating=result.baseline_avg_rating,
+        recent_negative_share=result.recent_negative_share,
+        baseline_negative_share=result.baseline_negative_share,
+        recent_count=result.recent_count,
+        baseline_count=result.baseline_count,
+    )
 
 
 @router.post("/query")
@@ -579,62 +602,6 @@ async def _compute_count(
     return result.scalar_one()
 
 
-@dataclass
-class PeriodStats:
-    count: int
-    avg_rating: float | None
-    sentiment_counts: dict[str, int]
-
-
-async def _compute_period_stats(
-    db: AsyncSession,
-    restaurant_id: int,
-    date_from: str | None,
-    date_to: str | None,
-) -> PeriodStats:
-    """Direct Postgres aggregation (count, avg rating, sentiment breakdown) for one date range.
-
-    Mirrors _compute_count's filter-building style -- exact numbers via SQL,
-    not an LLM estimate over a sample of retrieved evidence.
-    """
-    base_filters = [
-        ReviewChunkMeta.chunk_index == 0,
-        ReviewChunkMeta.restaurant_id == restaurant_id,
-    ]
-
-    if date_from:
-        with contextlib.suppress(ValueError):
-            dt = datetime.fromisoformat(date_from).replace(tzinfo=UTC)
-            base_filters.append(ReviewChunkMeta.review_date >= dt)
-    if date_to:
-        with contextlib.suppress(ValueError):
-            dt = datetime.fromisoformat(date_to).replace(tzinfo=UTC)
-            base_filters.append(ReviewChunkMeta.review_date <= dt)
-
-    count_stmt = (
-        select(func.count(), func.avg(ReviewChunkMeta.rating))
-        .select_from(ReviewChunkMeta)
-        .where(*base_filters)
-    )
-    count, avg_rating = (await db.execute(count_stmt)).one()
-
-    sentiment_stmt = (
-        select(ReviewChunkMeta.sentiment_label, func.count())
-        .select_from(ReviewChunkMeta)
-        .where(*base_filters)
-        .group_by(ReviewChunkMeta.sentiment_label)
-    )
-    sentiment_counts = {
-        (label or "Unknown"): cnt for label, cnt in (await db.execute(sentiment_stmt)).all()
-    }
-
-    return PeriodStats(
-        count=count,
-        avg_rating=round(avg_rating, 2) if avg_rating is not None else None,
-        sentiment_counts=sentiment_counts,
-    )
-
-
 def _period_label(prefix: str, date_filter) -> str:
     if date_filter is None or (not date_filter.from_date and not date_filter.to_date):
         return f"{prefix} (all time)"
@@ -671,13 +638,13 @@ async def _compute_trend_comparison(
     if decomposed.compare_date_filter is None:
         return None
 
-    current = await _compute_period_stats(
+    current = await compute_period_stats(
         db,
         restaurant_id,
         decomposed.date_filter.from_date if decomposed.date_filter else None,
         decomposed.date_filter.to_date if decomposed.date_filter else None,
     )
-    previous = await _compute_period_stats(
+    previous = await compute_period_stats(
         db,
         restaurant_id,
         decomposed.compare_date_filter.from_date,

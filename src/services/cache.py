@@ -76,5 +76,21 @@ class RedisCache:
             logger.warning("cache_invalidate_failed", restaurant_id=restaurant_id, error=str(exc))
         return 0
 
+    async def get_json(self, key: str) -> Any | None:
+        """Generic get for an arbitrary (non query-scoped) key, e.g. anomaly detection results."""
+        try:
+            value = await self.client.get(key)
+            return json.loads(value) if value else None
+        except Exception as exc:
+            logger.warning("cache_get_json_failed", key=key, error=str(exc))
+            return None
+
+    async def set_json(self, key: str, value: Any, ttl_seconds: int) -> None:
+        """Generic set for an arbitrary (non query-scoped) key with an explicit TTL."""
+        try:
+            await self.client.setex(key, ttl_seconds, json.dumps(value))
+        except Exception as exc:
+            logger.warning("cache_set_json_failed", key=key, error=str(exc))
+
     async def close(self) -> None:
         await self.client.aclose()
