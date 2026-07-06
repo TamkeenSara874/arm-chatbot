@@ -20,7 +20,12 @@ query_decomposition:
                               (e.g. "why is this icon red?", "how do I switch restaurants?",
                               "what does the confidence score mean?", "how do I log in?",
                               "why can't I see reviews from last week in the list?")
-                              -- answered by redirecting to AIO's CareBot assistant
+                              -- answered by redirecting to AIO's CareBot assistant.
+                              Does NOT include a question about this conversation's own history
+                              (e.g. "what did I ask before?", "do you remember what I asked about
+                              parking?", "what was your last answer?") -- those are answerable
+                              directly from session context and must be classified as factual instead,
+                              never redirected to CareBot.
     - report_howto          : question is specifically about generating or downloading the insights
                               report feature (e.g. "how do I download my report?", "where's the report
                               button?", "how do I export insights?", "can I get this as a PDF?")
