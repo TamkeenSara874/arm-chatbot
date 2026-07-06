@@ -88,6 +88,11 @@ class DecomposedQuery(BaseModel):
     source_filter: str | None = None
     date_filter: DateFilter | None = None
     rating_filter: RatingFilter | None = None
+    # Second period for trend-comparison questions ("since last month",
+    # "compared to last week") -- date_filter holds the current/more-recent
+    # period, this holds the earlier one being compared against. None for
+    # every non-comparison query.
+    compare_date_filter: DateFilter | None = None
 
 
 # Request / response schemas for the API

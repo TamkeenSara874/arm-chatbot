@@ -127,6 +127,14 @@ class TestCheckHallucinationGate:
         ranked = _ranking_result(evidence=[_evidence_item()])
         assert check_hallucination_gate(ranked, None) is None
 
+    def test_no_evidence_with_precomputed_trend_does_not_trigger(self) -> None:
+        ranked = _ranking_result(evidence=[])
+        assert check_hallucination_gate(ranked, None, "10 reviews | 5 reviews") is None
+
+    def test_no_evidence_no_count_no_trend_triggers_gate(self) -> None:
+        ranked = _ranking_result(evidence=[])
+        assert check_hallucination_gate(ranked, None, None) == NO_EVIDENCE_ANSWER
+
 
 class TestSelectGeneration:
     def _settings(self) -> MagicMock:
@@ -154,6 +162,13 @@ class TestSelectGeneration:
         selection = select_generation(decomposed, "42", self._settings())
         assert selection.is_complex is True
         assert selection.model_used == "gpt-4.1"
+
+    def test_precomputed_trend_forces_complex_even_if_simple(self) -> None:
+        decomposed = DecomposedQuery(intent="comparison", complexity="simple")
+        selection = select_generation(decomposed, None, self._settings(), "10 reviews | 5 reviews")
+        assert selection.is_complex is True
+        assert selection.model_used == "gpt-4.1"
+        assert selection.prompt_name == "chat_response_complex"
 
 
 class TestBuildGenerationPrompt:
@@ -211,6 +226,37 @@ class TestBuildGenerationPrompt:
         )
         _, kwargs = loader.format.call_args
         assert kwargs["exact_count"] == "None"
+
+    def test_complex_prompt_defaults_trend_comparison_to_none_string(self) -> None:
+        loader = MagicMock()
+        loader.format.return_value = ("system", "user")
+        build_generation_prompt(
+            loader,
+            "chat_response_complex",
+            True,
+            query="q",
+            session_context="ctx",
+            corrections="None",
+            evidence="ev",
+        )
+        _, kwargs = loader.format.call_args
+        assert kwargs["trend_comparison"] == "None"
+
+    def test_complex_prompt_passes_trend_comparison_through(self) -> None:
+        loader = MagicMock()
+        loader.format.return_value = ("system", "user")
+        build_generation_prompt(
+            loader,
+            "chat_response_complex",
+            True,
+            query="q",
+            session_context="ctx",
+            corrections="None",
+            evidence="ev",
+            trend_comparison="10 reviews | 5 reviews",
+        )
+        _, kwargs = loader.format.call_args
+        assert kwargs["trend_comparison"] == "10 reviews | 5 reviews"
 
     def test_unverified_note_defaults_to_none_string(self) -> None:
         loader = MagicMock()
