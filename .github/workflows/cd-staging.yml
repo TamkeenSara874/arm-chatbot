@@ -1,9 +1,13 @@
 name: CD Staging
 
-# Builds and pushes container images on every merge to main. Does NOT deploy
-# anywhere yet -- no cloud target has been chosen (see docs/runbook.md). This
-# workflow is the "build once, deploy later" half: once a platform is picked,
-# add a deploy job at the bottom that pulls the image tag this job pushes.
+# Builds and pushes container images on every merge to main, as a versioned
+# GHCR mirror for audit/rollback reference. Does NOT deploy anywhere -- the
+# chosen target (Railway, see docs/runbook.md) builds directly from this repo
+# via its own GitHub integration and does not consume these images, so no
+# deploy job belongs here. See docs/runbook.md's "Choosing a target" section
+# for why (short version: the frontend image needs the backend's live URL as
+# a build arg, which Railway's reference variables resolve natively and a
+# prebuilt image can't).
 
 on:
   push:
@@ -52,9 +56,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Deploy target not yet chosen ──────────────────────────────────────────
-  # When one is: add a job here that pulls
-  # ghcr.io/<repo>-backend:staging-${{ github.sha }} (and -frontend) and
-  # deploys it to the staging environment for whichever platform is picked
-  # (Railway/ECS/Cloud Run). See docs/runbook.md for the env vars/secrets
-  # each image needs at runtime.
+  # ── No deploy job here by design ──────────────────────────────────────────
+  # Railway auto-deploys on every push to its connected branch, building
+  # straight from infra/docker/{backend,frontend}/Dockerfile in this repo.
+  # See docs/runbook.md's "Choosing a target" section for the full setup and
+  # why these GHCR images aren't what Railway deploys.

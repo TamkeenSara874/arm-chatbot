@@ -1,9 +1,15 @@
 name: CD Production
 
-# Builds and pushes container images on a version tag (v1.2.3). Does NOT
-# deploy anywhere yet -- no cloud target has been chosen (see docs/runbook.md).
-# Mirrors cd-staging.yml's build step; production promotion should be a
-# deliberate, tagged release, not every merge to main.
+# Builds and pushes container images on a version tag (v1.2.3) as a versioned
+# GHCR mirror for audit/rollback reference -- mirrors cd-staging.yml's build
+# step. The actual deploy is a separate job below: Railway's default
+# continuous-deploy-from-branch model doesn't fit "only deploy on a tagged
+# release" (unlike cd-staging.yml, which relies on Railway auto-deploying
+# every push to main), so this explicitly triggers a Railway redeploy of the
+# `backend`/`frontend` services via the Railway CLI when a v* tag is pushed.
+# Requires a RAILWAY_TOKEN repo secret (a Railway project token) -- see
+# docs/runbook.md's "Choosing a target" section for how to create the
+# project/services this references.
 
 on:
   push:
@@ -52,7 +58,22 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── Deploy target not yet chosen ──────────────────────────────────────────
-  # When one is: add a job here that pulls ghcr.io/<repo>-backend:${{
-  # github.ref_name }} (and -frontend) and deploys it to production, plus a
-  # rollback procedure (redeploy the previous tag). See docs/runbook.md.
+  deploy:
+    name: Deploy to Railway (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    strategy:
+      matrix:
+        service: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Trigger redeploy
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway up --service ${{ matrix.service }} --detach
+
+  # Rollback: redeploy the previous known-good tag the same way -- checkout
+  # that tag, rerun this job (or `railway up` locally against the linked
+  # project). See docs/runbook.md's Rollback section.
