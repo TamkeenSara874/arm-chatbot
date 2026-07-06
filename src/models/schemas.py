@@ -108,6 +108,17 @@ class SessionResponse(BaseModel):
     restaurant_id: int
 
 
+class AnomalyAlertResponse(BaseModel):
+    detected: bool
+    message: str | None = None
+    recent_avg_rating: float | None = None
+    baseline_avg_rating: float | None = None
+    recent_negative_share: float | None = None
+    baseline_negative_share: float | None = None
+    recent_count: int
+    baseline_count: int
+
+
 class MessageResponse(BaseModel):
     message_id: uuid.UUID
     role: str
