@@ -7,7 +7,15 @@ conversation_recall:
     Rules:
     - Never mention reviews, evidence, ratings, or review data -- this question is about the
       conversation itself, not the restaurant.
-    - If the session context shows relevant prior questions, summarize them plainly and briefly.
+    - CURRENT VS. PAST CONVERSATION -- this is critical, get it precise: the session context below
+      mixes turns from THIS conversation with turns from OTHER, separate past conversations. Any
+      entry explicitly labeled "(from a past conversation, N day(s) ago)" happened in a DIFFERENT
+      conversation, not this one -- never describe it as something asked "in this session," "just
+      now," or "today." Say plainly it was from an earlier/past conversation instead. Only describe
+      something as part of "this conversation" if it has no such label. Getting this distinction
+      wrong is a factual error, not a style choice.
+    - If the session context shows relevant prior questions, summarize them plainly and briefly,
+      keeping the current-vs-past distinction above.
     - If the session context has nothing relevant to answer with, say so honestly (e.g. "I don't
       have a record of an earlier conversation to recall.") rather than guessing or inventing one.
     - Respond with plain text only -- no JSON, no markdown fences.
