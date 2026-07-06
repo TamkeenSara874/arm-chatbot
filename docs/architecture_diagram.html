@@ -161,7 +161,7 @@
 
 <header class="page-head">
   <h1>ARM Review RAG Chatbot — System Architecture</h1>
-  <p>Single connected view. Colors indicate subsystem membership; solid arrows are control flow, dashed arrows are data reads/writes and provider calls. This revision: replaces the open restaurant-picker with a real login (per-restaurant credential required to mint a JWT), adds a semantic (embedding-similarity) cache tier alongside the exact-text Redis tier, wires corrections into a consensus threshold (a single flag is an unverified aside, 3+ distinct flags supersede evidence), widens session memory to search across a restaurant's entire history (not just the current session, with an age cutoff), forces wider retrieval for broad "how can I improve" questions and adds a guardrail against inventing sales/revenue numbers reviews don't contain, replaces the reranker with an ONNX int8-quantized MiniLM at a tuned batch size, makes batch ingestion resumable (skips reviews a prior attempt already finished) and adds a push-based single-review live-ingestion endpoint, and surfaces the insights report's numbers as charts alongside the existing narrative.</p>
+  <p>Single connected view. Colors indicate subsystem membership; solid arrows are control flow, dashed arrows are data reads/writes and provider calls. This revision: replaces the open restaurant-picker with a real login (per-restaurant credential required to mint a JWT), adds a semantic (embedding-similarity) cache tier alongside the exact-text Redis tier, wires corrections into a consensus threshold (a single flag is an unverified aside, 3+ distinct flags supersede evidence), widens session memory to search across a restaurant's entire history (not just the current session, with an age cutoff), forces wider retrieval for broad "how can I improve" questions and adds a guardrail against inventing sales/revenue numbers reviews don't contain, replaces the reranker with an ONNX int8-quantized MiniLM at a tuned batch size, makes batch ingestion resumable (skips reviews a prior attempt already finished) and adds a push-based single-review live-ingestion endpoint, and surfaces the insights report's numbers as charts alongside the existing narrative. Latest round (live-testing driven): scopes session_context to reference-resolution only so it can't drag a self-contained question toward the wrong intent, adds a deterministic keyword safety net for count-query sentiment polarity, requires generation to cite real numbers instead of vague quantifiers, gives "what did we talk about?"-style questions their own conversation_recall path with zero review retrieval, and persists staleness-caveat suppression per restaurant (not per session) so it surfaces once total instead of on every new conversation.</p>
 </header>
 
 <div class="legend">
@@ -253,10 +253,11 @@ flowchart TD
   subgraph PIPE["QUERY PIPELINE — src/core/"]
     direction TB
     RC{"<div class='nb'><span class='t dec-t'>Redis Cache</span><span class='d'>SHA256 key · TTL 24h</span></div>"}
-    GR["<div class='nb'><span class='t pipe-t'>Guardrail</span><span class='d'>out_of_scope → canned decline</span><span class='d'>ui_question → redirect to CareBot</span><span class='d'>report_howto → answered directly</span></div>"]
-    DC["<div class='nb'><span class='t pipe-t'>Query Decomposition</span><span class='d'>Groq llama-3.3-70b</span><span class='d'>intent · aspect · sentiment</span><span class='d'>date_filter · rating_filter</span><span class='d'>sub_queries · complexity</span></div>"]
+    GR["<div class='nb'><span class='t pipe-t'>Guardrail</span><span class='d'>out_of_scope → canned decline</span><span class='d'>ui_question → redirect to CareBot</span><span class='d'>report_howto → answered directly</span><span class='d'>(conversation_recall is NOT guardrailed —</span><span class='d'>CareBot has no visibility into this</span><span class='d'>chatbot's own conversation history)</span></div>"]
+    DC["<div class='nb'><span class='t pipe-t'>Query Decomposition</span><span class='d'>Groq llama-3.3-70b</span><span class='d'>intent · aspect · sentiment</span><span class='d'>date_filter · rating_filter</span><span class='d'>sub_queries · complexity</span><span class='d'>session_context scoped to reference</span><span class='d'>resolution only — must not override</span><span class='d'>classification of a self-contained query</span></div>"]
     CR{"<div class='nb'><span class='t dec-t'>Complexity Router</span></div>"}
-    CP["<div class='nb'><span class='t pipe-t'>count_query fast path</span><span class='d'>PostgreSQL COUNT★</span><span class='d'>target &lt; 100ms · $0</span></div>"]
+    CVR["<div class='nb'><span class='t pipe-t'>conversation_recall fast path</span><span class='d'>session context only, zero retrieval</span><span class='d'>no evidence · no confidence score</span><span class='d'>no staleness caveat · gpt-4o-mini</span><span class='d'>must honestly distinguish this session</span><span class='d'>from age-labeled cross-session turns</span></div>"]
+    CP["<div class='nb'><span class='t pipe-t'>count_query fast path</span><span class='d'>PostgreSQL COUNT★</span><span class='d'>target &lt; 100ms · $0</span><span class='d'>sentiment_filter has a deterministic</span><span class='d'>keyword override — decomposition can</span><span class='d'>mis-extract polarity on an unambiguous query</span></div>"]
     RP["<div class='nb'><span class='t pipe-t'>report fast path</span><span class='d'>OpenAI tool call</span><span class='d'>export_insights_report</span></div>"]
     PL["<div class='nb'><span class='t pipe-t'>asyncio.gather</span><span class='d'>embed + decompose in parallel</span><span class='d'>saves ~150ms</span></div>"]
     RPARAMS["<div class='nb'><span class='t pipe-t'>Retrieval Params</span><span class='d'>top_k = 20 if needs_aggregation</span><span class='d'>OR intent == improvement, else 6</span><span class='d'>(deterministic override — not left</span><span class='d'>to the model inferring it alone)</span></div>"]
@@ -270,6 +271,7 @@ flowchart TD
     RC -->|"MISS"| GR
     GR -->|"pass-through"| DC
     DC --> CR
+    CR -->|"conversation_recall"| CVR
     CR -->|"count_query"| CP
     CR -->|"report"| RP
     CR -->|"simple / complex"| PL
@@ -386,7 +388,7 @@ flowchart TD
 
   class LP,ZS,CW,MB,EP,FB,CM,RV,HOOK feNode;
   class AT,A1,A2,A3,A4,A5,A8,A6,A7 apiNode;
-  class GR,DC,CP,RP,PL,RPARAMS,HR,RR,RK,COR,SC,GN pipeNode;
+  class GR,DC,CP,RP,PL,CVR,RPARAMS,HR,RR,RK,COR,SC,GN pipeNode;
   class PJ,FC,SRC,IS,CK,EE,BE2,QU,PGU,BI,SREV iwNode;
   class PG,QD,RD storeNode;
   class GQ,GM,GC,EM,RE llmNode;
