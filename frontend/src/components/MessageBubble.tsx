@@ -12,14 +12,6 @@ const SOURCE_COLORS: Record<string, string> = {
   OpenTable: 'bg-orange-50 text-orange-700',
 };
 
-// The backend recomputes the staleness caveat fresh on every response where
-// most retrieved evidence predates DATA_STALENESS_DAYS -- for a dataset that's
-// a fixed historical snapshot, that's true of nearly every query, so showing
-// it on every single message is just noise after the first time. Suppress
-// repeats of this specific caveat within a session; other caveats (e.g. a
-// validation-failure warning) are unrelated and should still always show.
-const STALENESS_CAVEAT_PREFIX = 'Note: the most relevant reviews found are from over a year ago';
-
 function TypingIndicator() {
   return (
     <div className="flex items-center gap-1 py-1 px-0.5">
@@ -121,15 +113,10 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const sourceBreakdown = response?.response.source_breakdown ?? {};
   const hasSourceBreakdown = Object.keys(sourceBreakdown).length > 0;
 
+  // Repeat staleness caveats are already stripped upstream (chatStore's
+  // finalizeMessage/loadHistory, persisted per-restaurant in localStorage) --
+  // whatever's left in response.caveats here is meant to be shown.
   const currentCaveat = response?.response.caveats;
-  const isStalenessCaveat = currentCaveat?.startsWith(STALENESS_CAVEAT_PREFIX) ?? false;
-  const stalenessCaveatAlreadyShown =
-    isStalenessCaveat &&
-    messageIndex > 0 &&
-    messages
-      .slice(0, messageIndex)
-      .some((m) => m.response?.response.caveats?.startsWith(STALENESS_CAVEAT_PREFIX));
-  const shouldShowCaveat = Boolean(currentCaveat) && !stalenessCaveatAlreadyShown;
 
   return (
     <div className="flex justify-start animate-fade-in">
@@ -158,7 +145,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             </p>
           )}
 
-          {shouldShowCaveat && (
+          {currentCaveat && (
             <p className="mt-2 text-xs text-amber-600 border-t border-amber-100 pt-2">
               {currentCaveat}
             </p>

@@ -28,6 +28,48 @@ function saveSession(restaurantId: number | null, sessionId: string | null): voi
   } catch { /* ignore quota errors */ }
 }
 
+// The backend recomputes this caveat fresh whenever most retrieved evidence
+// predates DATA_STALENESS_DAYS -- true of nearly every query against a fixed,
+// aging dataset. A per-session suppression (show once per conversation) still
+// re-shows it every time a new conversation starts, which is exactly what
+// prompted this: persist "seen" per restaurant in localStorage instead, so it
+// surfaces once total until the dataset genuinely changes or storage is cleared.
+const STALENESS_CAVEAT_PREFIX = 'Note: the most relevant reviews found are from over a year ago';
+const STALENESS_SEEN_KEY_PREFIX = 'arm-chatbot-staleness-seen-';
+
+function hasSeenStalenessCaveat(restaurantId: number | null): boolean {
+  if (restaurantId == null) return false;
+  try {
+    return localStorage.getItem(`${STALENESS_SEEN_KEY_PREFIX}${restaurantId}`) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function markStalenessCaveatSeen(restaurantId: number | null): void {
+  if (restaurantId == null) return;
+  try {
+    localStorage.setItem(`${STALENESS_SEEN_KEY_PREFIX}${restaurantId}`, '1');
+  } catch { /* ignore quota errors */ }
+}
+
+// Strips the staleness caveat from a response if it's already been shown
+// once for this restaurant; otherwise marks it seen and lets it through this
+// one time. Other caveat types (e.g. a validation-failure warning) are left
+// untouched -- only this specific, known-noisy caveat is ever suppressed.
+function suppressRepeatStalenessCaveat(
+  response: ChatQueryResponse,
+  restaurantId: number | null
+): ChatQueryResponse {
+  const caveat = response.response.caveats;
+  if (!caveat?.startsWith(STALENESS_CAVEAT_PREFIX)) return response;
+  if (hasSeenStalenessCaveat(restaurantId)) {
+    return { ...response, response: { ...response.response, caveats: null } };
+  }
+  markStalenessCaveatSeen(restaurantId);
+  return response;
+}
+
 interface ChatStore {
   restaurantId: number | null;
   sessionId: string | null;
@@ -88,14 +130,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     })),
 
   finalizeMessage: (id, response) =>
-    set((s) => ({
-      isStreaming: false,
-      messages: s.messages.map((m) =>
-        m.id === id
-          ? { ...m, content: response.response.answer, response, isStreaming: false }
-          : m
-      ),
-    })),
+    set((s) => {
+      const deduped = suppressRepeatStalenessCaveat(response, s.restaurantId);
+      return {
+        isStreaming: false,
+        messages: s.messages.map((m) =>
+          m.id === id
+            ? { ...m, content: deduped.response.answer, response: deduped, isStreaming: false }
+            : m
+        ),
+      };
+    }),
 
   cancelStreaming: (id) =>
     set((s) => {
@@ -121,7 +166,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   removeMessage: (id) =>
     set((s) => ({ messages: s.messages.filter((m) => m.id !== id) })),
 
-  loadHistory: (history) => set({ messages: history }),
+  loadHistory: (history) =>
+    set((s) => ({
+      messages: history.map((m) =>
+        m.response
+          ? { ...m, response: suppressRepeatStalenessCaveat(m.response, s.restaurantId) }
+          : m
+      ),
+    })),
 
   setSelectedMessageId: (id) => set({ selectedMessageId: id }),
 
