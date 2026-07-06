@@ -190,6 +190,37 @@ async def chat_query(
             _yield_instant(response, body.session_id, uuid.uuid4(), model_used="guardrail")
         )
 
+    # conversation_recall fast path — this question is about the conversation
+    # itself ("what did I ask before?"), not the restaurant's reviews, so it
+    # must never touch review retrieval/ranking. Retrieving reviews here
+    # would attach fake evidence, a confidence score, and a staleness caveat
+    # to an answer that has nothing to do with review content -- exactly the
+    # bug this path exists to avoid.
+    if decomposed.intent == "conversation_recall":
+        session_context = await build_session_context(
+            body.session_id, restaurant_id, sanitized, db, vector_store, embedder
+        )
+        recall_system, recall_user = loader.format(
+            "conversation_recall", query=sanitized, session_context=session_context
+        )
+        t_recall = time.perf_counter()
+        recall_answer = await simple_client.complete(
+            recall_user,
+            recall_system,
+            usage_callback=lambda p, c: trace.record_tokens(settings.openai_simple_model, p, c),
+        )
+        trace.generation_ms = (time.perf_counter() - t_recall) * 1000.0
+        trace.generation_model = settings.openai_simple_model
+        trace.emit()
+        return EventSourceResponse(
+            _yield_instant(
+                ChatResponseSchema(answer=recall_answer.strip(), evidence=[], confidence=1.0),
+                body.session_id,
+                uuid.uuid4(),
+                model_used=settings.openai_simple_model,
+            )
+        )
+
     # count_query fast path — direct Postgres COUNT(*), no LLM generation.
     # A compound question ("how many positive reviews AND how can I
     # improve?") comes back from decomposition as intent=count_query with a

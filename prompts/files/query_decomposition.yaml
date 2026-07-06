@@ -13,19 +13,22 @@ query_decomposition:
     - count_query        : asking for an exact count ("how many positive reviews do I have?", "how many 1-star reviews this month?") -- triggers a direct Postgres COUNT(*), no LLM generation needed
     - report             : asking for a comprehensive report or summary document ("give me a report", "summarise this month", "export insights") -- triggers structured report generation with DB aggregations and a downloadable markdown output
     - improvement        : asking how to improve (answer from review evidence only; if no evidence, state limitation)
-    - factual            : asking a specific fact (e.g., last review date, average rating)
+    - factual            : asking a specific fact about the restaurant's REVIEWS (e.g., last review date,
+                              average rating) -- requires retrieving review evidence to answer
+    - conversation_recall   : question is about THIS CONVERSATION's own history, not the restaurant's
+                              reviews (e.g. "what did I ask before?", "do you remember what I asked about
+                              parking?", "what did we talk about?", "what was your last answer?")
+                              -- answered directly from session context alone, no review retrieval,
+                              no evidence, no confidence score based on reviews. Never classify this as
+                              factual (which implies review evidence is needed) or ui_question (CareBot
+                              has no visibility into this chatbot's own conversation history).
     - out_of_scope          : question has nothing to do with restaurant reviews (weather, current events, general knowledge)
     - ui_question           : question is about navigating or using the AIO platform/dashboard itself,
                               not this report feature specifically and not review content
                               (e.g. "why is this icon red?", "how do I switch restaurants?",
                               "what does the confidence score mean?", "how do I log in?",
                               "why can't I see reviews from last week in the list?")
-                              -- answered by redirecting to AIO's CareBot assistant.
-                              Does NOT include a question about this conversation's own history
-                              (e.g. "what did I ask before?", "do you remember what I asked about
-                              parking?", "what was your last answer?") -- those are answerable
-                              directly from session context and must be classified as factual instead,
-                              never redirected to CareBot.
+                              -- answered by redirecting to AIO's CareBot assistant
     - report_howto          : question is specifically about generating or downloading the insights
                               report feature (e.g. "how do I download my report?", "where's the report
                               button?", "how do I export insights?", "can I get this as a PDF?")
