@@ -24,6 +24,12 @@ async def decompose_query(
     the model can self-correct. Falls back to a safe factual intent if both
     attempts fail, ensuring no query hard-errors at the decomposition stage.
     """
+    # Only visible at LOG_LEVEL=DEBUG -- the actual system_prompt/user_prompt
+    # sent to the LLM, session_context included, exactly as interpolated. The
+    # classified intent/complexity alone (in request_traces.jsonl) isn't
+    # enough to tell whether session context caused a misclassification;
+    # seeing the real prompt text is what makes that verifiable.
+    logger.debug("decomposition_prompt", system=system, user=prompt)
     validation_error_msg: str = ""
     try:
         return await client.complete_structured(

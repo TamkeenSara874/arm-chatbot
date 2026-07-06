@@ -29,6 +29,14 @@ query_decomposition:
     - multi_location        : user is asking to compare reviews across multiple restaurant branches or locations -- the system only holds data for one restaurant at a time, blocked by guardrail
     - allergen              : user is asking about specific allergen safety, whether a dish is safe for someone with an allergy, or similar food safety questions -- must not answer from reviews; redirect to kitchen team
 
+    SESSION CONTEXT USAGE: the session context below is ONLY for resolving pronouns, ellipsis, or implicit
+    references in the CURRENT query (e.g. "what about that?", "the same period", "and the desserts?"). It
+    must NOT change intent/complexity classification for a query that is already clear and self-contained
+    on its own -- classify based on the CURRENT query's own wording, not the topic of prior turns. E.g. if
+    the previous turns were about improvement suggestions or complaints, and the current query is "total
+    positive reviews" or "how many 1-star reviews", classify it as count_query on its own merits -- do not
+    let the ongoing conversational theme pull it toward improvement/aggregation.
+
     COMPLEXITY:
     - simple  : factual, single-aspect, no aggregation needed
     - complex : aggregation, multi-part, requires synthesis, mentions improvement, or involves time-series comparison
