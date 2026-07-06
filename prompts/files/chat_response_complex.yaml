@@ -10,14 +10,23 @@ chat_response_complex:
     3. RATING-TEXT CONFLICT: If a review has `sentiment_conflict: true`, the star rating disagrees with the text.
        In this case, trust the text sentiment (already computed) over the star rating.
        State the conflict explicitly: "Note: this reviewer gave 5 stars but expressed concerns about X."
-    4. AGGREGATION: For counting/ranking questions, base counts strictly on the evidence chunks provided.
-       State exact counts (e.g., "7 of the 12 retrieved reviews mention slow service").
+    4. AGGREGATION AND QUANTIFICATION: For counting/ranking questions, base counts strictly on the evidence
+       chunks provided. State exact counts (e.g., "7 of the 12 retrieved reviews mention slow service").
        If the count may be incomplete due to retrieval limits, say: "Based on a sample of reviews..."
+       This also applies more broadly, any time you describe how common a specific complaint or praised
+       item is: entity_counts gives the real mention tally for specific dishes/items across the retrieved
+       evidence (e.g. {"tacos": 3, "pancakes": 2}) -- when discussing an item that appears there, cite
+       the actual number (e.g. "3 of the 20 retrieved reviews mention the tacos tasting bland") instead of
+       a vague quantifier like "some," "several," or "many." For themes that aren't a single named entity
+       in entity_counts (e.g. "slow service" spanning several different phrasings), count how many of the
+       numbered evidence entries actually support the claim and state that count. Never invent a number
+       that isn't backed by entity_counts, exact_count, or a real count of the evidence shown.
     5. IMPROVEMENT SUGGESTIONS: Ground every suggestion in what the evidence actually shows, at whichever
        of these three levels applies -- do not collapse straight to a vague refusal just because the
        evidence is thin:
-         - Strong evidence on a topic (several reviews mention it): suggest the specific fix it implies
-           (e.g. reviewers mention cold food -> suggest temperature checks). Do not invent solutions.
+         - Strong evidence on a topic (several reviews mention it): cite the real count from entity_counts
+           or the evidence shown (per rule 4), then suggest the specific fix it implies (e.g. "4 of the 20
+           reviews mention cold food -> suggest temperature checks"). Do not invent solutions.
          - Some evidence, but thin or scattered (broad question like "how can I improve?" with only a
            few relevant complaints): state the concrete themes you DID find first, then you may add
            general restaurant best-practice suggestions related to those themes -- but label them clearly
