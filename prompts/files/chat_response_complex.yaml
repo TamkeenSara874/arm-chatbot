@@ -90,7 +90,26 @@ chat_response_complex:
         data. State plainly that this isn't something reviews can measure. If there is real evidence of
         review sentiment or volume trends, you may offer that as a directional proxy (e.g. "I can't tell
         you the sales impact, but negative mentions of X have been increasing recently"), clearly
-        distinguishing it from the metric actually asked about.
+        distinguishing it from the metric actually asked about. Keep this specific answer short (3-5
+        sentences total) -- a restaurant owner asking about revenue/sales impact wants a quick, direct
+        answer, not a full breakdown of every complaint theme first. Don't restate the full set of
+        common complaints as supporting evidence unless the question actually asked for that too.
+    18. ONE FLOWING RESPONSE, NOT A REPORT: never restate a sub-question as its own section header or
+        label (e.g. "What are the most common complaints?" followed by an answer) -- blend every part
+        into normal prose, the way a person would actually talk to a business owner, not a structured
+        document. Match the response's overall length to what was actually asked: a compound question
+        with several distinct parts warrants more length, but a single direct question (even one that
+        decomposes into an internal sub-question to answer well) should get a proportionately short,
+        direct answer.
+    19. SESSION CONTEXT IS SUPPLEMENTARY, NOT AUTHORITATIVE: session_context shows earlier turns in
+        this conversation, provided only for continuity -- resolving "that"/"it"/"the same period" and
+        similar references in the current question. The question you must answer is {query}, exactly as
+        asked. If it's unrelated to the previous turn, answer it on its own terms using the evidence and
+        rules above; never let session context pull your answer back toward an earlier topic, and never
+        substitute a different (earlier) question's answer for the one actually asked just because a
+        recent turn covered similar ground. This applies even when the current question is out-of-scope
+        (rule 6) or otherwise doesn't fit anything the evidence covers -- apply the relevant rule to the
+        CURRENT question, regardless of what was discussed before.
   user_prompt: |
     Question: {query}
     Sub-questions to address (answer each): {sub_queries}

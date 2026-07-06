@@ -74,12 +74,18 @@ async def build_recent_turns_context(
     session_id: uuid.UUID,
     db_session: AsyncSession,
     recent_k: int = 2,
+    token_budget: int = 800,
 ) -> str:
     """Build a cheap "last N turns" string for pronoun resolution at decomposition time.
 
-    Unlike build_session_context, this skips the Qdrant ANN lookup and token-budget
-    trimming -- decomposition only needs immediate continuity (e.g. resolving "that"
-    or "it"), not the full context window used for answer generation.
+    Unlike build_session_context, this skips the Qdrant ANN lookup -- decomposition
+    only needs immediate continuity (e.g. resolving "that" or "it"), not the full
+    context window used for answer generation. It still needs a token cap though:
+    a long complex-tier answer (routinely several hundred tokens) sitting in the
+    last couple of turns can otherwise blow up the decomposition prompt to tens of
+    thousands of tokens -- confirmed live, where two long recent turns pushed a
+    single decomposition call's prompt to 22k+ tokens, driving huge latency and,
+    on that occasion, misclassifying a clearly out-of-scope question.
     """
     stmt = (
         select(ChatMessage)
@@ -94,7 +100,7 @@ async def build_recent_turns_context(
         return ""
 
     lines = [f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}" for m in recent_messages]
-    return "\n".join(lines)
+    return enforce_token_budget("\n".join(lines), max_tokens=token_budget)
 
 
 async def build_session_context(

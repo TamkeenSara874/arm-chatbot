@@ -212,8 +212,22 @@ async def chat_query(
             evidence=[],
             confidence=1.0,
         )
+        guardrail_msg_id = uuid.uuid4()
+        fire_and_forget(
+            _persist_instant_exchange(
+                session_id=body.session_id,
+                message_id=guardrail_msg_id,
+                sanitized=sanitized,
+                answer=guardrail_text,
+                model_used="guardrail",
+                restaurant_id=restaurant_id,
+                embedder=embedder,
+                vector_store=vector_store,
+            ),
+            name=f"persist-guardrail-{guardrail_msg_id}",
+        )
         return EventSourceResponse(
-            _yield_instant(response, body.session_id, uuid.uuid4(), model_used="guardrail")
+            _yield_instant(response, body.session_id, guardrail_msg_id, model_used="guardrail")
         )
 
     # conversation_recall fast path — this question is about the conversation
@@ -238,11 +252,25 @@ async def chat_query(
         trace.generation_ms = (time.perf_counter() - t_recall) * 1000.0
         trace.generation_model = settings.openai_simple_model
         trace.emit()
+        recall_msg_id = uuid.uuid4()
+        fire_and_forget(
+            _persist_instant_exchange(
+                session_id=body.session_id,
+                message_id=recall_msg_id,
+                sanitized=sanitized,
+                answer=recall_answer.strip(),
+                model_used=settings.openai_simple_model,
+                restaurant_id=restaurant_id,
+                embedder=embedder,
+                vector_store=vector_store,
+            ),
+            name=f"persist-recall-{recall_msg_id}",
+        )
         return EventSourceResponse(
             _yield_instant(
                 ChatResponseSchema(answer=recall_answer.strip(), evidence=[], confidence=1.0),
                 body.session_id,
-                uuid.uuid4(),
+                recall_msg_id,
                 model_used=settings.openai_simple_model,
             )
         )
@@ -260,6 +288,19 @@ async def chat_query(
         if not decomposed.sub_queries:
             count_answer, count_msg_id = await _handle_count_query(
                 db, body, restaurant_id, decomposed, sanitized, trace
+            )
+            fire_and_forget(
+                _persist_instant_exchange(
+                    session_id=body.session_id,
+                    message_id=count_msg_id,
+                    sanitized=sanitized,
+                    answer=count_answer,
+                    model_used="direct_query",
+                    restaurant_id=restaurant_id,
+                    embedder=embedder,
+                    vector_store=vector_store,
+                ),
+                name=f"persist-count-{count_msg_id}",
             )
             return EventSourceResponse(
                 _yield_instant(
@@ -1051,6 +1092,62 @@ async def _post_response_tasks(
             )
     except Exception as exc:
         logger.warning("post_response_tasks_failed", error=str(exc))
+
+
+async def _persist_instant_exchange(
+    session_id: uuid.UUID,
+    message_id: uuid.UUID,
+    sanitized: str,
+    answer: str,
+    model_used: str,
+    restaurant_id: int,
+    embedder: BaseEmbedder,
+    vector_store: BaseVectorStore,
+) -> None:
+    """Persist the user+assistant turn for fast paths that skip the full
+    pipeline (guardrail, conversation_recall, count_query).
+
+    Without this, these turns never reach Postgres or Qdrant session_memory --
+    both build_recent_turns_context (Postgres) and build_session_context's
+    cross-session ANN search (Qdrant) only ever see persisted rows, so a
+    guardrail decline or count-query answer would silently vanish from chat
+    history and from every future session-context/conversation_recall lookup,
+    including its own. Confirmed live: a corrections lookup against a
+    count-query answer found no original_response for the same reason.
+    """
+    from src.services.database import get_session_factory
+
+    session_factory = get_session_factory()
+    try:
+        async with session_factory() as db:
+            user_msg = ChatMessage(
+                id=message_id, session_id=session_id, role="user", content=sanitized
+            )
+            db.add(user_msg)
+            asst_msg = ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=answer,
+                model_used=model_used,
+            )
+            db.add(asst_msg)
+            await db.commit()
+
+            session_row = await db.get(ChatSession, session_id)
+            if session_row:
+                session_row.last_activity_at = datetime.now(tz=UTC)
+                await db.commit()
+
+            await store_session_turn(
+                session_id=session_id,
+                restaurant_id=restaurant_id,
+                role="user",
+                content=sanitized,
+                embedder=embedder,
+                vector_store=vector_store,
+            )
+    except Exception as exc:
+        logger.warning("instant_persist_failed", error=str(exc))
 
 
 async def _yield_cached(data: dict, session_id: uuid.UUID) -> AsyncGenerator[dict, None]:
