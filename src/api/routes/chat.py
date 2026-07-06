@@ -8,11 +8,13 @@
 # dependency injection, and every such route 422s on any real request. See
 # the identical fix + repro notes in src/api/routes/ingest.py.
 
+import contextlib
 import json
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import UTC
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Annotated
 
 import structlog
@@ -161,7 +163,10 @@ async def chat_query(
     recent_turns = await build_recent_turns_context(body.session_id, db)
     loader = get_prompt_loader()
     decomp_system, decomp_user = loader.format(
-        "query_decomposition", query=sanitized, session_context=recent_turns
+        "query_decomposition",
+        query=sanitized,
+        session_context=recent_turns,
+        current_date=datetime.now(UTC).date().isoformat(),
     )
     t_decomp = time.perf_counter()
     decomposed = await decompose_query(
@@ -245,6 +250,16 @@ async def chat_query(
         count = await _compute_count(db, restaurant_id, decomposed, sentiment_filter)
         precomputed_count = _format_count_answer(count, sentiment_filter)
 
+    # Trend-comparison fast path — decomposition sets compare_date_filter for
+    # a time-period comparison question ("since last month", "compared to
+    # last week"). Both periods' exact stats are computed via direct SQL
+    # here, same rationale as count_query above, and threaded into the
+    # complex generation prompt below rather than left for the LLM to
+    # estimate from a sample of retrieved evidence.
+    precomputed_trend: str | None = None
+    if decomposed.compare_date_filter is not None:
+        precomputed_trend = await _compute_trend_comparison(db, restaurant_id, decomposed)
+
     # Semantic cache check. Uses the decomposed/rephrased query (context- and
     # pronoun-resolved, more canonical than the raw message) so a paraphrase
     # of an earlier question can still hit -- exact-text caching alone would
@@ -277,6 +292,7 @@ async def chat_query(
             retrieval_query=retrieval_query,
             precomputed_query_vector=cache_query_vector or None,
             precomputed_count=precomputed_count,
+            precomputed_trend=precomputed_trend,
             db=db,
             simple_client=simple_client,
             complex_client=complex_client,
@@ -544,9 +560,6 @@ async def _compute_count(
         stmt = stmt.where(ReviewChunkMeta.sentiment_label == sentiment_filter)
 
     if decomposed.date_filter:
-        import contextlib
-        from datetime import datetime
-
         if decomposed.date_filter.from_date:
             with contextlib.suppress(ValueError):
                 dt = datetime.fromisoformat(decomposed.date_filter.from_date).replace(tzinfo=UTC)
@@ -564,6 +577,120 @@ async def _compute_count(
 
     result = await db.execute(stmt)
     return result.scalar_one()
+
+
+@dataclass
+class PeriodStats:
+    count: int
+    avg_rating: float | None
+    sentiment_counts: dict[str, int]
+
+
+async def _compute_period_stats(
+    db: AsyncSession,
+    restaurant_id: int,
+    date_from: str | None,
+    date_to: str | None,
+) -> PeriodStats:
+    """Direct Postgres aggregation (count, avg rating, sentiment breakdown) for one date range.
+
+    Mirrors _compute_count's filter-building style -- exact numbers via SQL,
+    not an LLM estimate over a sample of retrieved evidence.
+    """
+    base_filters = [
+        ReviewChunkMeta.chunk_index == 0,
+        ReviewChunkMeta.restaurant_id == restaurant_id,
+    ]
+
+    if date_from:
+        with contextlib.suppress(ValueError):
+            dt = datetime.fromisoformat(date_from).replace(tzinfo=UTC)
+            base_filters.append(ReviewChunkMeta.review_date >= dt)
+    if date_to:
+        with contextlib.suppress(ValueError):
+            dt = datetime.fromisoformat(date_to).replace(tzinfo=UTC)
+            base_filters.append(ReviewChunkMeta.review_date <= dt)
+
+    count_stmt = (
+        select(func.count(), func.avg(ReviewChunkMeta.rating))
+        .select_from(ReviewChunkMeta)
+        .where(*base_filters)
+    )
+    count, avg_rating = (await db.execute(count_stmt)).one()
+
+    sentiment_stmt = (
+        select(ReviewChunkMeta.sentiment_label, func.count())
+        .select_from(ReviewChunkMeta)
+        .where(*base_filters)
+        .group_by(ReviewChunkMeta.sentiment_label)
+    )
+    sentiment_counts = {
+        (label or "Unknown"): cnt for label, cnt in (await db.execute(sentiment_stmt)).all()
+    }
+
+    return PeriodStats(
+        count=count,
+        avg_rating=round(avg_rating, 2) if avg_rating is not None else None,
+        sentiment_counts=sentiment_counts,
+    )
+
+
+def _period_label(prefix: str, date_filter) -> str:
+    if date_filter is None or (not date_filter.from_date and not date_filter.to_date):
+        return f"{prefix} (all time)"
+    frm = date_filter.from_date or "earliest"
+    to = date_filter.to_date or "latest"
+    return f"{prefix} ({frm} to {to})"
+
+
+def _format_period_stats(label: str, stats: PeriodStats) -> str:
+    rating_part = f"{stats.avg_rating}/5" if stats.avg_rating is not None else "N/A"
+    sentiment_part = (
+        ", ".join(f"{count} {label_}" for label_, count in sorted(stats.sentiment_counts.items()))
+        or "none"
+    )
+    return (
+        f"{label}: {stats.count} review{'s' if stats.count != 1 else ''}, "
+        f"avg rating {rating_part}, sentiment breakdown: {sentiment_part}"
+    )
+
+
+async def _compute_trend_comparison(
+    db: AsyncSession,
+    restaurant_id: int,
+    decomposed,
+) -> str | None:
+    """Exact dual-period stats (count, avg rating, sentiment breakdown) via direct SQL.
+
+    Called only when decomposition populated compare_date_filter (a
+    time-period comparison question). Both periods are computed exactly
+    rather than estimated from a sample of retrieved evidence -- the same
+    fabricated-precision failure mode the groundedness checks elsewhere in
+    this app exist to catch.
+    """
+    if decomposed.compare_date_filter is None:
+        return None
+
+    current = await _compute_period_stats(
+        db,
+        restaurant_id,
+        decomposed.date_filter.from_date if decomposed.date_filter else None,
+        decomposed.date_filter.to_date if decomposed.date_filter else None,
+    )
+    previous = await _compute_period_stats(
+        db,
+        restaurant_id,
+        decomposed.compare_date_filter.from_date,
+        decomposed.compare_date_filter.to_date,
+    )
+
+    current_label = _period_label("Current period", decomposed.date_filter)
+    previous_label = _period_label("Comparison period", decomposed.compare_date_filter)
+
+    return (
+        f"{_format_period_stats(current_label, current)} | "
+        f"{_format_period_stats(previous_label, previous)}"
+    )
 
 
 def _format_count_answer(count: int, sentiment_filter: str | None) -> str:
@@ -608,6 +735,7 @@ async def _pipeline_stream(
     cache: RedisCache,
     trace: RequestTrace,
     precomputed_count: str | None = None,
+    precomputed_trend: str | None = None,
     precomputed_query_vector: list[float] | None = None,
 ) -> AsyncGenerator[dict, None]:
     settings_ = get_settings()
@@ -661,7 +789,7 @@ async def _pipeline_stream(
         trace.evidence_count = len(ranked.evidence)
         trace.low_evidence = ranked.low_evidence
 
-        gate_answer = check_hallucination_gate(ranked, precomputed_count)
+        gate_answer = check_hallucination_gate(ranked, precomputed_count, precomputed_trend)
 
         if gate_answer is not None:
             # Hard hallucination gate: with zero retrieved evidence there is
@@ -711,7 +839,9 @@ async def _pipeline_stream(
                 token_budget=settings_.session_context_token_budget,
             )
 
-            selection = select_generation(decomposed, precomputed_count, settings_)
+            selection = select_generation(
+                decomposed, precomputed_count, settings_, precomputed_trend
+            )
             model_used = selection.model_used
             gen_client = complex_client if selection.is_complex else simple_client
             loader = get_prompt_loader()
@@ -730,6 +860,7 @@ async def _pipeline_stream(
                 source_breakdown=ranked.source_breakdown,
                 recency_spike=ranked.recency_spike,
                 exact_count=precomputed_count,
+                trend_comparison=precomputed_trend,
             )
 
             # LLM streaming
@@ -762,8 +893,11 @@ async def _pipeline_stream(
         # Groundedness heuristic: does the answer state a review/mention count
         # higher than what was actually retrieved? Cheap code-only check (no
         # extra LLM call) used as the accuracy signal alongside confidence.
+        # A trend comparison exempts the same way a precomputed count does --
+        # both periods' numbers come from direct SQL, not the retrieved
+        # evidence sample, so they can legitimately exceed evidence_count.
         trace.groundedness_ok = check_count_groundedness(
-            answer_text, len(ranked.evidence), precomputed_count
+            answer_text, len(ranked.evidence), precomputed_count or precomputed_trend
         )
 
         # Build structured response for the final event

@@ -70,15 +70,19 @@ def estimate_confidence(ranked: RankingResult, groundedness_ok: bool = True) -> 
     return round(base, 3)
 
 
-def check_hallucination_gate(ranked: RankingResult, precomputed_count: str | None) -> str | None:
+def check_hallucination_gate(
+    ranked: RankingResult, precomputed_count: str | None, precomputed_trend: str | None = None
+) -> str | None:
     """Return the canned no-evidence answer if the hard hallucination gate
     applies, or None to signal the caller should proceed to generation.
 
     With zero retrieved evidence there is nothing grounded to answer from --
     skip the generation LLM call entirely rather than trust a soft "never
-    fabricate" prompt instruction under real traffic.
+    fabricate" prompt instruction under real traffic. A precomputed count or
+    trend comparison is itself grounded (direct SQL, not retrieved evidence),
+    so either one alone is enough to proceed even with zero evidence.
     """
-    if not ranked.evidence and not precomputed_count:
+    if not ranked.evidence and not precomputed_count and not precomputed_trend:
         return NO_EVIDENCE_ANSWER
     return None
 
@@ -91,15 +95,21 @@ class GenerationSelection:
 
 
 def select_generation(
-    decomposed: DecomposedQuery, precomputed_count: str | None, settings: Settings
+    decomposed: DecomposedQuery,
+    precomputed_count: str | None,
+    settings: Settings,
+    precomputed_trend: str | None = None,
 ) -> GenerationSelection:
     """Pick the generation model/prompt template for this query.
 
-    A compound query (generative half + a countable half) always routes
-    through the complex prompt/template so the DB-exact count can be stated
-    verbatim instead of the model trying to (mis)count evidence chunks itself.
+    A compound query (generative half + a countable half, or a trend
+    comparison) always routes through the complex prompt/template so the
+    DB-exact numbers can be stated verbatim instead of the model trying to
+    (mis)count or estimate them from evidence itself.
     """
-    is_complex = decomposed.complexity == "complex" or bool(precomputed_count)
+    is_complex = (
+        decomposed.complexity == "complex" or bool(precomputed_count) or bool(precomputed_trend)
+    )
     model_used = settings.openai_complex_model if is_complex else settings.openai_simple_model
     prompt_name = "chat_response_complex" if is_complex else "chat_response_simple"
     return GenerationSelection(
@@ -122,6 +132,7 @@ def build_generation_prompt(
     source_breakdown: dict | None = None,
     recency_spike: bool = False,
     exact_count: str | None = None,
+    trend_comparison: str | None = None,
 ) -> tuple[str, str]:
     """Render the generation system/user prompt via the given PromptLoader."""
     if is_complex:
@@ -137,6 +148,7 @@ def build_generation_prompt(
             recency_spike=str(recency_spike).lower(),
             evidence=evidence,
             exact_count=exact_count or "None",
+            trend_comparison=trend_comparison or "None",
         )
     else:
         gen_system, gen_user = loader.format(

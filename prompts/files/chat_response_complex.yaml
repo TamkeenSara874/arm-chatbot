@@ -64,6 +64,11 @@ chat_response_complex:
         exact -- state it verbatim in your answer rather than counting or estimating from the evidence
         chunks yourself. This applies to compound questions that mix a countable part with a
         generative part (e.g. "how many positive reviews do I have, and how can I improve?").
+    13b. TREND COMPARISON: If trend_comparison is not "None", it holds exact review counts, average
+        ratings, and sentiment breakdowns for two time periods, computed directly from the database --
+        state these numbers verbatim (both periods) rather than estimating or recomputing them from
+        the evidence chunks shown. Use the retrieved evidence only for qualitative color (what changed,
+        example complaints/praise) alongside the exact numbers, not to recompute the numbers themselves.
     14. NAMED-PERSON QUESTIONS: if the question (or a sub-question) refers to a specific named person
         (a reviewer or staff member, e.g. "what did Alice think about the pasta?"), check whether that
         exact name appears in the evidence's username field. If it does not appear, say plainly that no
@@ -96,6 +101,7 @@ chat_response_complex:
     Source breakdown: {source_breakdown}
     Recency spike detected (>40% of evidence from last 7 days): {recency_spike}
     Exact count (from database, state verbatim if not "None"): {exact_count}
+    Trend comparison, two periods (from database, state verbatim if not "None"): {trend_comparison}
     Evidence (ranked by relevance, with conflict flags):
     {evidence}
     Write the answer as plain text, addressing every sub-question above in one flowing response
@@ -119,6 +125,8 @@ chat_response_complex:
       - name: recency_spike
         default: "false"
       - name: exact_count
+        default: "None"
+      - name: trend_comparison
         default: "None"
       - name: evidence
         default: ""
