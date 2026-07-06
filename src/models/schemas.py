@@ -62,6 +62,7 @@ QueryIntent = Literal[
     "report",
     "improvement",
     "factual",
+    "conversation_recall",
     "out_of_scope",
     "ui_question",
     "report_howto",

@@ -13,7 +13,15 @@ query_decomposition:
     - count_query        : asking for an exact count ("how many positive reviews do I have?", "how many 1-star reviews this month?") -- triggers a direct Postgres COUNT(*), no LLM generation needed
     - report             : asking for a comprehensive report or summary document ("give me a report", "summarise this month", "export insights") -- triggers structured report generation with DB aggregations and a downloadable markdown output
     - improvement        : asking how to improve (answer from review evidence only; if no evidence, state limitation)
-    - factual            : asking a specific fact (e.g., last review date, average rating)
+    - factual            : asking a specific fact about the restaurant's REVIEWS (e.g., last review date,
+                              average rating) -- requires retrieving review evidence to answer
+    - conversation_recall   : question is about THIS CONVERSATION's own history, not the restaurant's
+                              reviews (e.g. "what did I ask before?", "do you remember what I asked about
+                              parking?", "what did we talk about?", "what was your last answer?")
+                              -- answered directly from session context alone, no review retrieval,
+                              no evidence, no confidence score based on reviews. Never classify this as
+                              factual (which implies review evidence is needed) or ui_question (CareBot
+                              has no visibility into this chatbot's own conversation history).
     - out_of_scope          : question has nothing to do with restaurant reviews (weather, current events, general knowledge)
     - ui_question           : question is about navigating or using the AIO platform/dashboard itself,
                               not this report feature specifically and not review content
@@ -28,6 +36,14 @@ query_decomposition:
     - manipulation_request  : user is asking to write a fake review, remove a negative review, improve ratings artificially, or suppress feedback -- blocked by guardrail, never answer from evidence
     - multi_location        : user is asking to compare reviews across multiple restaurant branches or locations -- the system only holds data for one restaurant at a time, blocked by guardrail
     - allergen              : user is asking about specific allergen safety, whether a dish is safe for someone with an allergy, or similar food safety questions -- must not answer from reviews; redirect to kitchen team
+
+    SESSION CONTEXT USAGE: the session context below is ONLY for resolving pronouns, ellipsis, or implicit
+    references in the CURRENT query (e.g. "what about that?", "the same period", "and the desserts?"). It
+    must NOT change intent/complexity classification for a query that is already clear and self-contained
+    on its own -- classify based on the CURRENT query's own wording, not the topic of prior turns. E.g. if
+    the previous turns were about improvement suggestions or complaints, and the current query is "total
+    positive reviews" or "how many 1-star reviews", classify it as count_query on its own merits -- do not
+    let the ongoing conversational theme pull it toward improvement/aggregation.
 
     COMPLEXITY:
     - simple  : factual, single-aspect, no aggregation needed

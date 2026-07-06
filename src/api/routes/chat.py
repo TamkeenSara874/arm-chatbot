@@ -190,6 +190,37 @@ async def chat_query(
             _yield_instant(response, body.session_id, uuid.uuid4(), model_used="guardrail")
         )
 
+    # conversation_recall fast path — this question is about the conversation
+    # itself ("what did I ask before?"), not the restaurant's reviews, so it
+    # must never touch review retrieval/ranking. Retrieving reviews here
+    # would attach fake evidence, a confidence score, and a staleness caveat
+    # to an answer that has nothing to do with review content -- exactly the
+    # bug this path exists to avoid.
+    if decomposed.intent == "conversation_recall":
+        session_context = await build_session_context(
+            body.session_id, restaurant_id, sanitized, db, vector_store, embedder
+        )
+        recall_system, recall_user = loader.format(
+            "conversation_recall", query=sanitized, session_context=session_context
+        )
+        t_recall = time.perf_counter()
+        recall_answer = await simple_client.complete(
+            recall_user,
+            recall_system,
+            usage_callback=lambda p, c: trace.record_tokens(settings.openai_simple_model, p, c),
+        )
+        trace.generation_ms = (time.perf_counter() - t_recall) * 1000.0
+        trace.generation_model = settings.openai_simple_model
+        trace.emit()
+        return EventSourceResponse(
+            _yield_instant(
+                ChatResponseSchema(answer=recall_answer.strip(), evidence=[], confidence=1.0),
+                body.session_id,
+                uuid.uuid4(),
+                model_used=settings.openai_simple_model,
+            )
+        )
+
     # count_query fast path — direct Postgres COUNT(*), no LLM generation.
     # A compound question ("how many positive reviews AND how can I
     # improve?") comes back from decomposition as intent=count_query with a
@@ -212,8 +243,9 @@ async def chat_query(
                     model_used="direct_query",
                 )
             )
-        count = await _compute_count(db, restaurant_id, decomposed)
-        precomputed_count = _format_count_answer(count, decomposed)
+        sentiment_filter = _resolve_sentiment_filter(sanitized, decomposed.sentiment_filter)
+        count = await _compute_count(db, restaurant_id, decomposed, sentiment_filter)
+        precomputed_count = _format_count_answer(count, sentiment_filter)
 
     # Semantic cache check. Uses the decomposed/rephrased query (context- and
     # pronoun-resolved, more canonical than the raw message) so a paraphrase
@@ -465,10 +497,42 @@ async def submit_correction(
     return CorrectionResponse(correction_id=correction_id, is_consensus=is_consensus)
 
 
+_SENTIMENT_KEYWORDS: dict[str, str] = {
+    "positive": "Positive",
+    "negative": "Negative",
+    "mixed": "Mixed",
+    "neutral": "Neutral",
+}
+
+
+def _resolve_sentiment_filter(raw_query: str, decomposed_filter: str | None) -> str | None:
+    """Deterministic keyword override for decomposition's sentiment_filter.
+
+    Observed live: decomposition (a small, fast free-tier model) can extract
+    the wrong polarity on an otherwise-trivial query -- e.g. "total negative
+    reviews" coming back with sentiment_filter="Positive". A count_query's
+    whole value proposition is an exact, trustworthy number; silently
+    reporting the wrong sentiment with 100% confidence is worse than the
+    model getting a fuzzier question wrong. When the raw query text names
+    exactly one sentiment keyword unambiguously, that keyword wins over
+    whatever decomposition extracted -- a substring check is zero-cost and
+    more reliable than the LLM for this specific, checkable ambiguity. If
+    zero or more than one keyword matches (e.g. "compare positive and
+    negative reviews", genuinely ambiguous), decomposition's own extraction
+    is trusted instead.
+    """
+    lowered = raw_query.lower()
+    matched = {label for keyword, label in _SENTIMENT_KEYWORDS.items() if keyword in lowered}
+    if len(matched) == 1:
+        return next(iter(matched))
+    return decomposed_filter
+
+
 async def _compute_count(
     db: AsyncSession,
     restaurant_id: int,
     decomposed,
+    sentiment_filter: str | None,
 ) -> int:
     """Direct Postgres COUNT(*) honoring sentiment/date/rating filters from decomposition."""
     stmt = (
@@ -478,8 +542,8 @@ async def _compute_count(
         .where(ReviewChunkMeta.restaurant_id == restaurant_id)
     )
 
-    if decomposed.sentiment_filter:
-        stmt = stmt.where(ReviewChunkMeta.sentiment_label == decomposed.sentiment_filter)
+    if sentiment_filter:
+        stmt = stmt.where(ReviewChunkMeta.sentiment_label == sentiment_filter)
 
     if decomposed.date_filter:
         import contextlib
@@ -504,10 +568,8 @@ async def _compute_count(
     return result.scalar_one()
 
 
-def _format_count_answer(count: int, decomposed) -> str:
-    sentiment_part = (
-        f" {decomposed.sentiment_filter.lower()}" if decomposed.sentiment_filter else ""
-    )
+def _format_count_answer(count: int, sentiment_filter: str | None) -> str:
+    sentiment_part = f" {sentiment_filter.lower()}" if sentiment_filter else ""
     if count == 0:
         return f"No{sentiment_part} reviews match that filter."
     return f"You have {count}{sentiment_part} review{'s' if count != 1 else ''} in total."
@@ -522,10 +584,11 @@ async def _handle_count_query(
     trace: RequestTrace,
 ) -> tuple[str, uuid.UUID]:
     t0 = time.perf_counter()
-    count = await _compute_count(db, restaurant_id, decomposed)
+    sentiment_filter = _resolve_sentiment_filter(sanitized, decomposed.sentiment_filter)
+    count = await _compute_count(db, restaurant_id, decomposed, sentiment_filter)
     trace.generation_ms = (time.perf_counter() - t0) * 1000.0
 
-    answer = _format_count_answer(count, decomposed)
+    answer = _format_count_answer(count, sentiment_filter)
 
     msg_id = uuid.uuid4()
     trace.emit()

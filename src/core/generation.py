@@ -4,6 +4,10 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import structlog
+
+logger = structlog.get_logger()
+
 if TYPE_CHECKING:
     from src.config import Settings
     from src.core.ranking import RankingResult
@@ -121,7 +125,7 @@ def build_generation_prompt(
 ) -> tuple[str, str]:
     """Render the generation system/user prompt via the given PromptLoader."""
     if is_complex:
-        return loader.format(
+        gen_system, gen_user = loader.format(
             prompt_name,
             query=query,
             sub_queries=json.dumps(sub_queries or []),
@@ -134,14 +138,22 @@ def build_generation_prompt(
             evidence=evidence,
             exact_count=exact_count or "None",
         )
-    return loader.format(
-        prompt_name,
-        query=query,
-        session_context=session_context,
-        corrections=corrections,
-        unverified_note=unverified_note,
-        evidence=evidence,
-    )
+    else:
+        gen_system, gen_user = loader.format(
+            prompt_name,
+            query=query,
+            session_context=session_context,
+            corrections=corrections,
+            unverified_note=unverified_note,
+            evidence=evidence,
+        )
+
+    # Only visible at LOG_LEVEL=DEBUG -- see decompose_query()'s matching log
+    # for why this is worth having: the classified output alone doesn't show
+    # whether session_context (or corrections/unverified_note) actually
+    # ended up looking the way you'd expect inside the real prompt text.
+    logger.debug("generation_prompt", system=gen_system, user=gen_user)
+    return gen_system, gen_user
 
 
 def clean_answer_text(raw: str) -> str:
