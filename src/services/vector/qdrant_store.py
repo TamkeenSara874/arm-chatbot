@@ -23,13 +23,43 @@ from src.utils.retry import fetch_with_retry
 logger = structlog.get_logger()
 
 
+async def _create_collection_if_missing(
+    qdrant: AsyncQdrantClient, name: str, **create_kwargs: Any
+) -> None:
+    """Create a collection unless it already exists, tolerating the race
+    where another concurrent process (e.g. a sibling uvicorn worker on first
+    boot against a brand-new Qdrant instance) creates it between our
+    collection_exists() check and this create_collection() call.
+
+    The collection_exists()-then-create() pattern alone has a TOCTOU gap: with
+    multiple workers starting at once against an empty Qdrant, two can both
+    see "missing" and both call create_collection(), and the loser gets a 409
+    Conflict. That 409 means the collection now exists exactly as intended --
+    it's not a real failure, so it's caught and logged rather than raised
+    (which previously crashed the whole app on startup).
+    """
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
+    if await qdrant.collection_exists(name):
+        logger.info("qdrant_collection_exists", collection=name)
+        return
+    try:
+        await qdrant.create_collection(collection_name=name, **create_kwargs)
+        logger.info("qdrant_collection_created", collection=name)
+    except UnexpectedResponse as exc:
+        if exc.status_code == 409:
+            logger.info("qdrant_collection_created_concurrently", collection=name)
+        else:
+            raise
+
+
 async def ensure_collections(settings: Any) -> None:
     """Idempotently create the Qdrant collections this app depends on.
 
     Must run to completion before anything upserts into these collections.
     Callable from multiple entry points (API startup, the standalone seed
-    script) since collection_exists()/create_collection() make repeat calls
-    a no-op -- whichever process starts first does the real work.
+    script) since _create_collection_if_missing() makes repeat/concurrent
+    calls a no-op -- whichever process gets there first does the real work.
     """
     from qdrant_client import AsyncQdrantClient
     from qdrant_client.http.models import Distance, SparseVectorParams, VectorParams
@@ -37,17 +67,14 @@ async def ensure_collections(settings: Any) -> None:
     qdrant = AsyncQdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key or None)
     try:
         # review_chunks uses named vectors: dense (ANN) + sparse (BM25-style via fastembed)
-        if not await qdrant.collection_exists(settings.qdrant_collection_reviews):
-            await qdrant.create_collection(
-                collection_name=settings.qdrant_collection_reviews,
-                vectors_config={
-                    "dense": VectorParams(size=settings.embedding_dim, distance=Distance.COSINE),
-                },
-                sparse_vectors_config={"sparse": SparseVectorParams()},
-            )
-            logger.info("qdrant_collection_created", collection=settings.qdrant_collection_reviews)
-        else:
-            logger.info("qdrant_collection_exists", collection=settings.qdrant_collection_reviews)
+        await _create_collection_if_missing(
+            qdrant,
+            settings.qdrant_collection_reviews,
+            vectors_config={
+                "dense": VectorParams(size=settings.embedding_dim, distance=Distance.COSINE),
+            },
+            sparse_vectors_config={"sparse": SparseVectorParams()},
+        )
 
         # correction_embeddings, session_memory, and chat_cache use flat dense vectors only
         for name in [
@@ -55,16 +82,11 @@ async def ensure_collections(settings: Any) -> None:
             settings.qdrant_collection_session_memory,
             settings.qdrant_collection_chat_cache,
         ]:
-            if not await qdrant.collection_exists(name):
-                await qdrant.create_collection(
-                    collection_name=name,
-                    vectors_config=VectorParams(
-                        size=settings.embedding_dim, distance=Distance.COSINE
-                    ),
-                )
-                logger.info("qdrant_collection_created", collection=name)
-            else:
-                logger.info("qdrant_collection_exists", collection=name)
+            await _create_collection_if_missing(
+                qdrant,
+                name,
+                vectors_config=VectorParams(size=settings.embedding_dim, distance=Distance.COSINE),
+            )
     finally:
         await qdrant.close()
 
