@@ -38,9 +38,7 @@ class TestResolveSentimentFilter:
         assert _resolve_sentiment_filter("how many reviews mention tacos", None) is None
 
     def test_ambiguous_both_keywords_falls_back_to_decomposed_filter(self) -> None:
-        result = _resolve_sentiment_filter(
-            "compare positive and negative reviews", "Positive"
-        )
+        result = _resolve_sentiment_filter("compare positive and negative reviews", "Positive")
         assert result == "Positive"
 
     def test_mixed_and_neutral_keywords_recognized(self) -> None:
@@ -74,7 +72,9 @@ class TestComputeCount:
         db.execute = AsyncMock(return_value=exec_result)
         decomposed = MagicMock(date_filter=None, rating_filter=None)
 
-        count = await _compute_count(db, restaurant_id=1, decomposed=decomposed, sentiment_filter="Negative")
+        count = await _compute_count(
+            db, restaurant_id=1, decomposed=decomposed, sentiment_filter="Negative"
+        )
 
         assert count == 42
         db.execute.assert_awaited_once()
