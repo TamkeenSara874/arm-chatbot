@@ -161,7 +161,7 @@
 
 <header class="page-head">
   <h1>ARM Review RAG Chatbot — System Architecture</h1>
-  <p>Single connected view. Colors indicate subsystem membership; solid arrows are control flow, dashed arrows are data reads/writes and provider calls. This revision: replaces the open restaurant-picker with a real login (per-restaurant credential required to mint a JWT), adds a semantic (embedding-similarity) cache tier alongside the exact-text Redis tier, wires corrections into a consensus threshold (a single flag is an unverified aside, 3+ distinct flags supersede evidence), widens session memory to search across a restaurant's entire history (not just the current session, with an age cutoff), forces wider retrieval for broad "how can I improve" questions and adds a guardrail against inventing sales/revenue numbers reviews don't contain, replaces the reranker with an ONNX int8-quantized MiniLM at a tuned batch size, makes batch ingestion resumable (skips reviews a prior attempt already finished) and adds a push-based single-review live-ingestion endpoint, and surfaces the insights report's numbers as charts alongside the existing narrative. Latest round (live-testing driven): scopes session_context to reference-resolution only so it can't drag a self-contained question toward the wrong intent, adds a deterministic keyword safety net for count-query sentiment polarity, requires generation to cite real numbers instead of vague quantifiers, gives "what did we talk about?"-style questions their own conversation_recall path with zero review retrieval, and persists staleness-caveat suppression per restaurant (not per session) so it surfaces once total instead of on every new conversation.</p>
+  <p>Single connected view. Colors indicate subsystem membership; solid arrows are control flow, dashed arrows are data reads/writes and provider calls. This revision: replaces the open restaurant-picker with a real login (per-restaurant credential required to mint a JWT), adds a semantic (embedding-similarity) cache tier alongside the exact-text Redis tier, wires corrections into a consensus threshold (a single flag is an unverified aside, 3+ distinct flags supersede evidence), widens session memory to search across a restaurant's entire history (not just the current session, with an age cutoff), forces wider retrieval for broad "how can I improve" questions and adds a guardrail against inventing sales/revenue numbers reviews don't contain, replaces the reranker with an ONNX int8-quantized MiniLM at a tuned batch size, makes batch ingestion resumable (skips reviews a prior attempt already finished) and adds a push-based single-review live-ingestion endpoint, and surfaces the insights report's numbers as charts alongside the existing narrative. Latest round (live-testing driven): scopes session_context to reference-resolution only so it can't drag a self-contained question toward the wrong intent, adds a deterministic keyword safety net for count-query sentiment polarity, requires generation to cite real numbers instead of vague quantifiers, gives "what did we talk about?"-style questions their own conversation_recall path with zero review retrieval, and persists staleness-caveat suppression per restaurant (not per session) so it surfaces once total instead of on every new conversation. Newest round: consolidates rate limiting into one shared, Redis-backed, restaurant-keyed limiter that fails open on a Redis outage (previously three separate, partly in-memory-only instances silently multiplied the configured quota across workers); adds trend comparison (exact two-period stats via direct Postgres aggregation, not an LLM estimate) and a proactive rating/sentiment-drop alerts endpoint, both sharing the same exact-SQL aggregation helper; and makes Qdrant collection creation tolerant of concurrent creation by sibling workers on first boot against a brand-new Qdrant instance (a real crash this uncovered when deploying to a fresh Qdrant Cloud cluster — never surfaced locally, since the seed service always creates collections before the backend starts).</p>
 </header>
 
 <div class="legend">
@@ -206,7 +206,7 @@ flowchart TD
       SD7 -->|"no"| SD9
     end
 
-    BE["<div class='nb'><span class='t seed-t'>Backend Starts</span><span class='d'>uvicorn ready · API serving</span><span class='d'>reranker + sparse model warmup blocks</span><span class='d'>this step, not the first chat request</span></div>"]
+    BE["<div class='nb'><span class='t seed-t'>Backend Starts</span><span class='d'>uvicorn ready · API serving</span><span class='d'>reranker + sparse model warmup blocks</span><span class='d'>this step, not the first chat request</span><span class='d'>Qdrant collection creation tolerates a</span><span class='d'>409 from a sibling worker's concurrent</span><span class='d'>create on a brand-new Qdrant instance</span></div>"]
     FEC["<div class='nb'><span class='t seed-t'>Frontend Container Starts</span><span class='d'>node:20-alpine · npm install · vite dev</span><span class='d'>NOT gated on seed/backend readiness —</span><span class='d'>only ordered after backend container start</span></div>"]
 
     INFRA --> SD1
@@ -237,10 +237,10 @@ flowchart TD
     CW --> HOOK
   end
 
-  subgraph API["API LAYER — FastAPI · SlowAPI rate limiting · Bearer auth"]
+  subgraph API["API LAYER — FastAPI · one shared Redis-backed SlowAPI limiter · Bearer auth"]
     direction TB
     AT["<div class='nb'><span class='t api-t'>POST /auth/token</span><span class='d'>restaurant_id + restaurant_key</span><span class='d'>→ JWT scoped to that restaurant_id</span><span class='d'>same 401 for wrong key / unknown id</span><span class='d'>(prevents restaurant_id enumeration)</span></div>"]
-    A1["<div class='nb'><span class='t api-t'>POST /chat/query</span><span class='d'>SSE stream · 10 req/min</span></div>"]
+    A1["<div class='nb'><span class='t api-t'>POST /chat/query</span><span class='d'>SSE stream · 10 req/min</span><span class='d'>rate-limit key = restaurant_id from JWT</span><span class='d'>(shared limiter, not per-worker)</span></div>"]
     A2["<div class='nb'><span class='t api-t'>POST /chat/sessions</span></div>"]
     A3["<div class='nb'><span class='t api-t'>POST /chat/correct</span><span class='d'>20 req/min</span></div>"]
     A4["<div class='nb'><span class='t api-t'>POST /chat/report</span></div>"]
@@ -248,6 +248,7 @@ flowchart TD
     A8["<div class='nb'><span class='t api-t'>POST /ingest/review</span><span class='d'>single review, push-based · 60 req/min</span><span class='d'>external_review_id → deterministic review_id</span><span class='d'>repeat call = update, not duplicate</span></div>"]
     A6["<div class='nb'><span class='t api-t'>GET /restaurants</span><span class='d'>ops/admin listing — not called</span><span class='d'>by the frontend login flow</span></div>"]
     A7["<div class='nb'><span class='t api-t'>GET /health · /health/ready</span><span class='d'>/health/metrics — auth required</span></div>"]
+    A9["<div class='nb'><span class='t api-t'>GET /chat/alerts</span><span class='d'>proactive rating/sentiment-drop check</span><span class='d'>no request body — polled by the frontend</span></div>"]
   end
 
   subgraph PIPE["QUERY PIPELINE — src/core/"]
@@ -265,12 +266,15 @@ flowchart TD
     RR["<div class='nb'><span class='t pipe-t'>Cross-Encoder Reranking</span><span class='d'>cross-encoder/ms-marco-MiniLM-L6-v2</span><span class='d'>ONNX int8 dynamic quantization</span><span class='d'>batch_size=8 (fixes length-padding waste</span><span class='d'>that masked quantization's real win)</span><span class='d'>sigmoid normalised · fallback to RRF order</span><span class='d'>warmed up at startup, blocks before traffic</span></div>"]
     RK["<div class='nb'><span class='t pipe-t'>Evidence Ranking</span><span class='d'>relevance = reranker sigmoid score</span><span class='d'>(RRF already ran server-side in Qdrant —</span><span class='d'>nothing downstream re-runs/overwrites it)</span><span class='d'>sentiment-mapped effective_rating</span><span class='d'>recency decay 1/(days+1)</span><span class='d'>entity counts · injection penalty 0.5</span><span class='d'>staleness caveat &gt; 365 days</span></div>"]
     COR["<div class='nb'><span class='t pipe-t'>Correction Lookup</span><span class='d'>ANN over correction_embeddings</span><span class='d'>is_consensus (3+ distinct flags)</span><span class='d'>→ corrections: supersedes evidence</span><span class='d'>single flag → unverified_note:</span><span class='d'>brief mention only, evidence still wins</span></div>"]
+    TC["<div class='nb'><span class='t pipe-t'>Trend Comparison</span><span class='d'>compare_date_filter set → two-period</span><span class='d'>exact Postgres aggregation (count ·</span><span class='d'>avg rating · sentiment), not an LLM</span><span class='d'>estimate — src/core/review_stats.py,</span><span class='d'>shared with the Alerts endpoint below</span></div>"]
+    AD["<div class='nb'><span class='t pipe-t'>Anomaly Detection</span><span class='d'>src/core/anomaly.py — reuses</span><span class='d'>review_stats.compute_period_stats</span><span class='d'>7-day window vs 7-day baseline</span><span class='d'>rating drop ≥0.5 OR neg. share +25pp</span><span class='d'>result cached in Redis, 12h TTL —</span><span class='d'>no new scheduler, recomputed lazily</span></div>"]
     SC["<div class='nb'><span class='t pipe-t'>Session Context</span><span class='d'>last 5 verbatim — PostgreSQL</span><span class='d'>top-3 ANN — Qdrant session_memory,</span><span class='d'>filtered by restaurant_id (not just</span><span class='d'>session_id) — surfaces relevant turns</span><span class='d'>from OTHER past sessions too, labeled</span><span class='d'>with age · 90-day staleness cutoff</span><span class='d'>rolling summary at msg 50 · 6000-tok budget</span></div>"]
     GN["<div class='nb'><span class='t pipe-t'>Response Generation</span><span class='d'>simple → gpt-4o-mini, max 400 tok</span><span class='d'>complex → gpt-4.1, max 800 tok</span><span class='d'>structured output via beta.parse</span><span class='d'>SSE token stream</span><span class='d'>real token usage → RequestTrace.cost_usd</span><span class='d'>groundedness_ok count-overclaim check</span><span class='d'>3-way improvement grounding: strong evidence</span><span class='d'>→ specific fix; thin → real themes + labeled</span><span class='d'>general advice; zero → honest refusal</span><span class='d'>never invents sales/revenue numbers reviews</span><span class='d'>don't contain — states that plainly instead</span></div>"]
 
     RC -->|"MISS"| GR
     GR -->|"pass-through"| DC
     DC --> CR
+    DC -.->|"compare_date_filter set"| TC
     CR -->|"conversation_recall"| CVR
     CR -->|"count_query"| CP
     CR -->|"report"| RP
@@ -282,6 +286,7 @@ flowchart TD
     RK --> COR
     COR --> SC
     SC --> GN
+    TC --> GN
   end
 
   subgraph IW["INGEST WORKER — asyncio.create_task, never blocks"]
@@ -310,7 +315,7 @@ flowchart TD
     direction TB
     PG[("<div class='nb'><span class='t store-t'>PostgreSQL</span><span class='d'>chat_session · chat_message</span><span class='d'>chat_correction — audit log</span><span class='d'>review_chunk_meta — + pipeline_version</span><span class='d'>ingest_job — + skipped_already_processed</span><span class='d'>ingest_manifest — file_hash · pipeline_version</span><span class='d'>restaurant_credential — SHA-256 key_hash</span><span class='d'>per restaurant_id, required to mint a JWT</span></div>")]
     QD[("<div class='nb'><span class='t store-t'>Qdrant</span><span class='d'>review_chunks — 3072-dim</span><span class='d'>correction_embeddings</span><span class='d'>session_memory — restaurant-wide, age-labeled</span><span class='d'>chat_cache — semantic cache tier, cosine ≥ 0.95</span></div>")]
-    RD[("<div class='nb'><span class='t store-t'>Redis</span><span class='d'>response cache — exact-text tier, TTL 24h</span><span class='d'>rate limit counters</span></div>")]
+    RD[("<div class='nb'><span class='t store-t'>Redis</span><span class='d'>response cache — exact-text tier, TTL 24h</span><span class='d'>rate limit counters — one shared limiter,</span><span class='d'>fails open if Redis is briefly unreachable</span><span class='d'>anomaly-alert cache — 12h TTL</span></div>")]
   end
 
   subgraph LLM["LLM PROVIDER CHAIN — circuit breakers + retry"]
@@ -350,6 +355,11 @@ flowchart TD
   SREV -.-> PG
   SREV -.-> RD
 
+  %% Alerts flow entry
+  A9 --> AD
+  AD -.-> PG
+  AD -.-> RD
+
   %% Correction flow
   A3 -.-> QD
   COR -.-> QD
@@ -362,6 +372,7 @@ flowchart TD
   SC -.-> QD
   SC -.-> PG
   GN -.-> PG
+  TC -.-> PG
   RC -.-> RD
   RC -.-> QD
   BI -.-> QD
@@ -387,8 +398,8 @@ flowchart TD
   classDef noteNode  fill:#FFFDF7,stroke:#B45309,stroke-width:1.6px,stroke-dasharray:6 4,color:#451A03,rx:10,ry:10;
 
   class LP,ZS,CW,MB,EP,FB,CM,RV,HOOK feNode;
-  class AT,A1,A2,A3,A4,A5,A8,A6,A7 apiNode;
-  class GR,DC,CP,RP,PL,CVR,RPARAMS,HR,RR,RK,COR,SC,GN pipeNode;
+  class AT,A1,A2,A3,A4,A5,A8,A6,A7,A9 apiNode;
+  class GR,DC,CP,RP,PL,CVR,RPARAMS,HR,RR,RK,COR,SC,GN,TC,AD pipeNode;
   class PJ,FC,SRC,IS,CK,EE,BE2,QU,PGU,BI,SREV iwNode;
   class PG,QD,RD storeNode;
   class GQ,GM,GC,EM,RE llmNode;
