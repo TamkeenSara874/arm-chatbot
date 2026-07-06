@@ -161,7 +161,7 @@
 
 <header class="page-head">
   <h1>ARM Review RAG Chatbot — System Architecture</h1>
-  <p>Single connected view. Colors indicate subsystem membership; solid arrows are control flow, dashed arrows are data reads/writes and provider calls. This revision: adds the frontend as a docker-compose service (not gated on seed/backend readiness), corrects hybrid retrieval to reflect Qdrant-native sparse vectors (BM25 is no longer a separate in-process index, so a Qdrant outage now degrades both dense and sparse together), reflects real per-request token-based cost tracking and a groundedness/count-overclaim check, moves the response cache TTL to 24h, and adds a report_howto guardrail branch so "how do I download my report?" is answered directly instead of redirected to CareBot.</p>
+  <p>Single connected view. Colors indicate subsystem membership; solid arrows are control flow, dashed arrows are data reads/writes and provider calls. This revision: replaces the open restaurant-picker with a real login (per-restaurant credential required to mint a JWT), adds a semantic (embedding-similarity) cache tier alongside the exact-text Redis tier, wires corrections into a consensus threshold (a single flag is an unverified aside, 3+ distinct flags supersede evidence), widens session memory to search across a restaurant's entire history (not just the current session, with an age cutoff), forces wider retrieval for broad "how can I improve" questions and adds a guardrail against inventing sales/revenue numbers reviews don't contain, replaces the reranker with an ONNX int8-quantized MiniLM at a tuned batch size, makes batch ingestion resumable (skips reviews a prior attempt already finished) and adds a push-based single-review live-ingestion endpoint, and surfaces the insights report's numbers as charts alongside the existing narrative.</p>
 </header>
 
 <div class="legend">
@@ -217,17 +217,17 @@ flowchart TD
 
   subgraph FE["FRONTEND — React 18 · Vite · TypeScript · Tailwind"]
     direction TB
-    RS["<div class='nb'><span class='t fe-t'>RestaurantSelector</span><span class='d'>GET /restaurants</span></div>"]
-    ZS[("<div class='nb'><span class='t fe-t'>Zustand Store</span><span class='d'>restaurantId · sessionId</span><span class='d'>messages</span></div>")]
+    LP["<div class='nb'><span class='t fe-t'>LoginPage</span><span class='d'>restaurant_id + restaurant_key form</span><span class='d'>full-screen gate, replaces old</span><span class='d'>free-pick-any-restaurant dropdown</span></div>"]
+    ZS[("<div class='nb'><span class='t fe-t'>Zustand Store</span><span class='d'>restaurantId · sessionId · JWT</span><span class='d'>messages</span></div>")]
     CW["<div class='nb'><span class='t fe-t'>ChatWindow</span></div>"]
     MB["<div class='nb'><span class='t fe-t'>MessageBubble</span><span class='d'>confidence badge · model badge</span><span class='d'>cached badge</span></div>"]
     EP["<div class='nb'><span class='t fe-t'>EvidencePanel</span><span class='d'>star rating · sentiment badge</span><span class='d'>conflict warning</span></div>"]
     FB["<div class='nb'><span class='t fe-t'>FeedbackButtons</span></div>"]
     CM["<div class='nb'><span class='t fe-t'>CorrectionModal</span></div>"]
-    RV["<div class='nb'><span class='t fe-t'>ReportView</span><span class='d'>backend returns markdown (source of truth)</span><span class='d'>rendered on-screen via react-markdown</span><span class='d'>Download PDF — client-side html2canvas+jsPDF</span></div>"]
+    RV["<div class='nb'><span class='t fe-t'>ReportView</span><span class='d'>backend returns markdown (source of truth)</span><span class='d'>+ ReportCharts (Recharts) — rating histogram,</span><span class='d'>sentiment pie, source + top praised/complained bars</span><span class='d'>Download PDF — client-side html2canvas+jsPDF</span></div>"]
     HOOK["<div class='nb'><span class='t fe-t'>useSSE Hook</span><span class='d'>@microsoft/fetch-event-source</span><span class='d'>AbortController</span><span class='d'>empty deps + getState</span></div>"]
 
-    RS --> ZS
+    LP --> ZS
     ZS --> CW
     CW --> MB
     MB --> EP
@@ -239,12 +239,14 @@ flowchart TD
 
   subgraph API["API LAYER — FastAPI · SlowAPI rate limiting · Bearer auth"]
     direction TB
+    AT["<div class='nb'><span class='t api-t'>POST /auth/token</span><span class='d'>restaurant_id + restaurant_key</span><span class='d'>→ JWT scoped to that restaurant_id</span><span class='d'>same 401 for wrong key / unknown id</span><span class='d'>(prevents restaurant_id enumeration)</span></div>"]
     A1["<div class='nb'><span class='t api-t'>POST /chat/query</span><span class='d'>SSE stream · 10 req/min</span></div>"]
     A2["<div class='nb'><span class='t api-t'>POST /chat/sessions</span></div>"]
     A3["<div class='nb'><span class='t api-t'>POST /chat/correct</span><span class='d'>20 req/min</span></div>"]
     A4["<div class='nb'><span class='t api-t'>POST /chat/report</span></div>"]
-    A5["<div class='nb'><span class='t api-t'>POST /ingest</span><span class='d'>5 req/min</span></div>"]
-    A6["<div class='nb'><span class='t api-t'>GET /restaurants</span></div>"]
+    A5["<div class='nb'><span class='t api-t'>POST /ingest</span><span class='d'>batch file upload · 5 req/min</span></div>"]
+    A8["<div class='nb'><span class='t api-t'>POST /ingest/review</span><span class='d'>single review, push-based · 60 req/min</span><span class='d'>external_review_id → deterministic review_id</span><span class='d'>repeat call = update, not duplicate</span></div>"]
+    A6["<div class='nb'><span class='t api-t'>GET /restaurants</span><span class='d'>ops/admin listing — not called</span><span class='d'>by the frontend login flow</span></div>"]
     A7["<div class='nb'><span class='t api-t'>GET /health · /health/ready</span><span class='d'>/health/metrics — auth required</span></div>"]
   end
 
@@ -257,11 +259,13 @@ flowchart TD
     CP["<div class='nb'><span class='t pipe-t'>count_query fast path</span><span class='d'>PostgreSQL COUNT★</span><span class='d'>target &lt; 100ms · $0</span></div>"]
     RP["<div class='nb'><span class='t pipe-t'>report fast path</span><span class='d'>OpenAI tool call</span><span class='d'>export_insights_report</span></div>"]
     PL["<div class='nb'><span class='t pipe-t'>asyncio.gather</span><span class='d'>embed + decompose in parallel</span><span class='d'>saves ~150ms</span></div>"]
+    RPARAMS["<div class='nb'><span class='t pipe-t'>Retrieval Params</span><span class='d'>top_k = 20 if needs_aggregation</span><span class='d'>OR intent == improvement, else 6</span><span class='d'>(deterministic override — not left</span><span class='d'>to the model inferring it alone)</span></div>"]
     HR["<div class='nb'><span class='t pipe-t'>Hybrid Retrieval</span><span class='d'>Dense ANN — Qdrant named vector 'dense'</span><span class='d'>Sparse — Qdrant native, fastembed BM25</span><span class='d'>server-side RRF via query_points()</span><span class='d'>Correction ANN — threshold 0.85</span><span class='d'>Qdrant breaker → both dense+sparse degrade together</span><span class='d'>(BM25 is no longer a separate in-process index)</span></div>"]
-    RR["<div class='nb'><span class='t pipe-t'>Cross-Encoder Reranking</span><span class='d'>BAAI/bge-reranker-base</span><span class='d'>sigmoid normalised · thread executor</span><span class='d'>fallback to RRF order on failure</span><span class='d'>warmed up at startup, blocks before uvicorn accepts traffic</span></div>"]
-    RK["<div class='nb'><span class='t pipe-t'>Evidence Ranking</span><span class='d'>RRF fusion, k=60</span><span class='d'>sentiment-mapped effective_rating</span><span class='d'>recency decay 1/(days+1)</span><span class='d'>entity counts · injection penalty 0.5</span><span class='d'>staleness caveat &gt; 365 days</span></div>"]
-    SC["<div class='nb'><span class='t pipe-t'>Session Context</span><span class='d'>last 5 verbatim — PostgreSQL</span><span class='d'>top-3 ANN — Qdrant session_memory</span><span class='d'>rolling summary at msg 50</span><span class='d'>6000-token budget</span></div>"]
-    GN["<div class='nb'><span class='t pipe-t'>Response Generation</span><span class='d'>simple → gpt-4o-mini, max 400 tok</span><span class='d'>complex → gpt-4.1, max 800 tok</span><span class='d'>structured output via beta.parse</span><span class='d'>SSE token stream</span><span class='d'>real token usage → RequestTrace.cost_usd</span><span class='d'>groundedness_ok count-overclaim check</span></div>"]
+    RR["<div class='nb'><span class='t pipe-t'>Cross-Encoder Reranking</span><span class='d'>cross-encoder/ms-marco-MiniLM-L6-v2</span><span class='d'>ONNX int8 dynamic quantization</span><span class='d'>batch_size=8 (fixes length-padding waste</span><span class='d'>that masked quantization's real win)</span><span class='d'>sigmoid normalised · fallback to RRF order</span><span class='d'>warmed up at startup, blocks before traffic</span></div>"]
+    RK["<div class='nb'><span class='t pipe-t'>Evidence Ranking</span><span class='d'>relevance = reranker sigmoid score</span><span class='d'>(RRF already ran server-side in Qdrant —</span><span class='d'>nothing downstream re-runs/overwrites it)</span><span class='d'>sentiment-mapped effective_rating</span><span class='d'>recency decay 1/(days+1)</span><span class='d'>entity counts · injection penalty 0.5</span><span class='d'>staleness caveat &gt; 365 days</span></div>"]
+    COR["<div class='nb'><span class='t pipe-t'>Correction Lookup</span><span class='d'>ANN over correction_embeddings</span><span class='d'>is_consensus (3+ distinct flags)</span><span class='d'>→ corrections: supersedes evidence</span><span class='d'>single flag → unverified_note:</span><span class='d'>brief mention only, evidence still wins</span></div>"]
+    SC["<div class='nb'><span class='t pipe-t'>Session Context</span><span class='d'>last 5 verbatim — PostgreSQL</span><span class='d'>top-3 ANN — Qdrant session_memory,</span><span class='d'>filtered by restaurant_id (not just</span><span class='d'>session_id) — surfaces relevant turns</span><span class='d'>from OTHER past sessions too, labeled</span><span class='d'>with age · 90-day staleness cutoff</span><span class='d'>rolling summary at msg 50 · 6000-tok budget</span></div>"]
+    GN["<div class='nb'><span class='t pipe-t'>Response Generation</span><span class='d'>simple → gpt-4o-mini, max 400 tok</span><span class='d'>complex → gpt-4.1, max 800 tok</span><span class='d'>structured output via beta.parse</span><span class='d'>SSE token stream</span><span class='d'>real token usage → RequestTrace.cost_usd</span><span class='d'>groundedness_ok count-overclaim check</span><span class='d'>3-way improvement grounding: strong evidence</span><span class='d'>→ specific fix; thin → real themes + labeled</span><span class='d'>general advice; zero → honest refusal</span><span class='d'>never invents sales/revenue numbers reviews</span><span class='d'>don't contain — states that plainly instead</span></div>"]
 
     RC -->|"MISS"| GR
     GR -->|"pass-through"| DC
@@ -269,10 +273,12 @@ flowchart TD
     CR -->|"count_query"| CP
     CR -->|"report"| RP
     CR -->|"simple / complex"| PL
-    PL --> HR
+    PL --> RPARAMS
+    RPARAMS --> HR
     HR --> RR
     RR --> RK
-    RK --> SC
+    RK --> COR
+    COR --> SC
     SC --> GN
   end
 
@@ -281,33 +287,39 @@ flowchart TD
     PV["<div class='nb'><span class='t iw-t'>PIPELINE_VERSION = 1.0.0</span><span class='d'>bump when: embedding model,</span><span class='d'>chunking strategy, or entity</span><span class='d'>extraction prompt changes</span></div>"]
     PJ["<div class='nb'><span class='t iw-t'>Parse JSON</span><span class='d'>utf-8-sig BOM</span><span class='d'>list(data.values())[0]</span><span class='d'>SQL string outer key</span></div>"]
     FC["<div class='nb'><span class='t iw-t'>Field Correction Defaults</span><span class='d'>createdAt → defensive parse</span><span class='d'>username → Anonymous</span><span class='d'>sentiment → Neutral · source → Unknown</span></div>"]
+    SKIP{"<div class='nb'><span class='t dec-t'>Already processed?</span><span class='d'>review_id + pipeline_version</span><span class='d'>already in review_chunk_meta?</span></div>"}
     SRC["<div class='nb'><span class='t iw-t'>Sentiment-Rating Conflict</span><span class='d'>pre-computed sentiment vs rating</span><span class='d'>sentiment_rating_agree flag</span><span class='d'>zero cost — no LLM</span></div>"]
     IS["<div class='nb'><span class='t iw-t'>Injection Scan</span><span class='d'>regex — 10 injection patterns</span><span class='d'>+ 13 system-leak patterns (output-side, separate list)</span><span class='d'>has_injection_attempt flag</span><span class='d'>never blocks storage</span><span class='d'>relevance penalty 0.5 at query time</span></div>"]
     CK["<div class='nb'><span class='t iw-t'>Adaptive Chunking — NLTK</span><span class='d'>len ≤ 256 tok → single chunk</span><span class='d'>len &gt; 256 → sliding window, 32-tok overlap</span><span class='d'>sent_tokenize sentence boundaries</span></div>"]
     EE["<div class='nb'><span class='t iw-t'>Entity Extraction</span><span class='d'>gpt-4o-mini per chunk</span><span class='d'>food_entities JSON array</span><span class='d'>~$0.075 per 500-review ingest</span></div>"]
     BE2["<div class='nb'><span class='t iw-t'>Batch Embedding</span><span class='d'>text-embedding-3-large</span><span class='d'>batch_size = 100</span><span class='d'>dim verify 3072 on first call</span></div>"]
-    QU["<div class='nb'><span class='t iw-t'>Qdrant Upsert</span><span class='d'>review_date_ts as Unix int</span><span class='d'>point_id = hash(restaurant+user+date+idx)</span></div>"]
+    QU["<div class='nb'><span class='t iw-t'>Qdrant Upsert (per batch)</span><span class='d'>review_date_ts as Unix int</span><span class='d'>point_id = hash(restaurant+user+date+idx)</span></div>"]
+    PGU["<div class='nb'><span class='t iw-t'>Postgres Upsert (same batch)</span><span class='d'>review_chunk_meta, ON CONFLICT DO UPDATE</span><span class='d'>commits together with the Qdrant upsert</span><span class='d'>above — not deferred to end-of-file, so a</span><span class='d'>crash never leaves Postgres empty while</span><span class='d'>Qdrant has full data</span></div>"]
     BI["<div class='nb'><span class='t iw-t'>Redis Cache Invalidate</span><span class='d'>invalidate_restaurant() on ingest</span><span class='d'>bursts stale cached chat answers</span></div>"]
+    SREV["<div class='nb'><span class='t iw-t'>Single-Review Live Path</span><span class='d'>POST /ingest/review → ingest_single_review()</span><span class='d'>review_id = hash(restaurant_id, external_review_id)</span><span class='d'>repeat call = update: reuses chunk_ids,</span><span class='d'>deletes stale leftover chunks (Qdrant + Postgres)</span><span class='d'>if the edit shrinks the chunk count</span></div>"]
 
-    PJ --> FC --> SRC --> IS --> CK --> EE --> BE2 --> QU --> BI
+    PJ --> FC --> SKIP
+    SKIP -->|"yes — skip, no LLM/embed cost"| BI
+    SKIP -->|"no"| SRC
+    SRC --> IS --> CK --> EE --> BE2 --> QU --> PGU --> BI
   end
 
   subgraph STORE["STORAGE LAYER"]
     direction TB
-    PG[("<div class='nb'><span class='t store-t'>PostgreSQL</span><span class='d'>chat_session · chat_message</span><span class='d'>chat_correction — audit log</span><span class='d'>review_chunk_meta · ingest_job</span><span class='d'>ingest_manifest — collection_name UNIQUE</span><span class='d'>file_hash SHA-256 · pipeline_version</span><span class='d'>review_count</span></div>")]
-    QD[("<div class='nb'><span class='t store-t'>Qdrant</span><span class='d'>review_chunks — 3072-dim</span><span class='d'>correction_embeddings</span><span class='d'>session_memory</span></div>")]
-    RD[("<div class='nb'><span class='t store-t'>Redis</span><span class='d'>response cache — TTL 24h</span><span class='d'>rate limit counters</span></div>")]
+    PG[("<div class='nb'><span class='t store-t'>PostgreSQL</span><span class='d'>chat_session · chat_message</span><span class='d'>chat_correction — audit log</span><span class='d'>review_chunk_meta — + pipeline_version</span><span class='d'>ingest_job — + skipped_already_processed</span><span class='d'>ingest_manifest — file_hash · pipeline_version</span><span class='d'>restaurant_credential — SHA-256 key_hash</span><span class='d'>per restaurant_id, required to mint a JWT</span></div>")]
+    QD[("<div class='nb'><span class='t store-t'>Qdrant</span><span class='d'>review_chunks — 3072-dim</span><span class='d'>correction_embeddings</span><span class='d'>session_memory — restaurant-wide, age-labeled</span><span class='d'>chat_cache — semantic cache tier, cosine ≥ 0.95</span></div>")]
+    RD[("<div class='nb'><span class='t store-t'>Redis</span><span class='d'>response cache — exact-text tier, TTL 24h</span><span class='d'>rate limit counters</span></div>")]
   end
 
   subgraph LLM["LLM PROVIDER CHAIN — circuit breakers + retry"]
     direction TB
-    GQ["<div class='nb'><span class='t llm-t'>Groq</span><span class='d'>llama-3.3-70b-versatile</span><span class='d'>decomposition · guardrail · temp 0.0</span></div>"]
+    GQ["<div class='nb'><span class='t llm-t'>Groq</span><span class='d'>llama-3.3-70b-versatile</span><span class='d'>decomposition · guardrail · temp 0.0</span><span class='d'>rotates across multiple free-tier keys</span><span class='d'>on rate limit, per-key circuit breaker</span></div>"]
     GM["<div class='nb'><span class='t llm-t'>gpt-4o-mini</span><span class='d'>simple queries · decomp fallback</span><span class='d'>session summary · entity extraction</span></div>"]
-    GC["<div class='nb'><span class='t llm-t'>gpt-4.1</span><span class='d'>complex queries · report summary</span></div>"]
+    GC["<div class='nb'><span class='t llm-t'>gpt-4.1</span><span class='d'>complex queries · report summary</span><span class='d'>tested vs. gpt-4.1-mini: mini was</span><span class='d'>slower on this workload — kept gpt-4.1</span></div>"]
     EM["<div class='nb'><span class='t llm-t'>text-embedding-3-large</span><span class='d'>3072 dims · batch_size 100</span></div>"]
-    RE["<div class='nb'><span class='t llm-t'>BAAI/bge-reranker-base</span><span class='d'>HuggingFace — local · ~50ms CPU</span><span class='d'>swappable via RERANKER_MODEL</span></div>"]
+    RE["<div class='nb'><span class='t llm-t'>cross-encoder/ms-marco-MiniLM-L6-v2</span><span class='d'>HuggingFace — local, ONNX int8 quantized</span><span class='d'>batch_size=8 · swappable via RERANKER_MODEL</span></div>"]
 
-    GQ -->|"429 → fallback"| GM
+    GQ -->|"429 → rotate key, then fallback"| GM
   end
 
   %% Startup wiring
@@ -318,10 +330,11 @@ flowchart TD
   SD4 -.->|"calls same pipeline directly"| PJ
 
   %% Frontend to API
-  HOOK -->|"POST SSE · Bearer"| A1
+  LP -->|"POST · Bearer (shared API_KEY)"| AT
+  AT -.->|"verify restaurant_credential"| PG
+  HOOK -->|"POST SSE · Bearer JWT"| A1
   CM -->|"POST · Bearer"| A3
   RV -->|"POST · Bearer"| A4
-  RS -->|"GET · Bearer"| A6
 
   %% API to Pipeline
   A1 --> RC
@@ -330,9 +343,14 @@ flowchart TD
 
   %% Ingest flow entry
   A5 --> PJ
+  A8 --> SREV
+  SREV -.-> QD
+  SREV -.-> PG
+  SREV -.-> RD
 
   %% Correction flow
   A3 -.-> QD
+  COR -.-> QD
 
   %% Storage reads / writes
   CP -.-> PG
@@ -343,8 +361,10 @@ flowchart TD
   SC -.-> PG
   GN -.-> PG
   RC -.-> RD
+  RC -.-> QD
   BI -.-> QD
-  QU -.-> PG
+  QU -.-> QD
+  PGU -.-> PG
 
   %% LLM wiring
   DC -->|"primary"| GQ
@@ -364,13 +384,13 @@ flowchart TD
   classDef seedNode  fill:#F0F9FF,stroke:#0369A1,stroke-width:1.8px,color:#082F49,rx:10,ry:10;
   classDef noteNode  fill:#FFFDF7,stroke:#B45309,stroke-width:1.6px,stroke-dasharray:6 4,color:#451A03,rx:10,ry:10;
 
-  class RS,ZS,CW,MB,EP,FB,CM,RV,HOOK feNode;
-  class A1,A2,A3,A4,A5,A6,A7 apiNode;
-  class GR,DC,CP,RP,PL,HR,RR,RK,SC,GN pipeNode;
-  class PJ,FC,SRC,IS,CK,EE,BE2,QU,BI iwNode;
+  class LP,ZS,CW,MB,EP,FB,CM,RV,HOOK feNode;
+  class AT,A1,A2,A3,A4,A5,A8,A6,A7 apiNode;
+  class GR,DC,CP,RP,PL,RPARAMS,HR,RR,RK,COR,SC,GN pipeNode;
+  class PJ,FC,SRC,IS,CK,EE,BE2,QU,PGU,BI,SREV iwNode;
   class PG,QD,RD storeNode;
   class GQ,GM,GC,EM,RE llmNode;
-  class RC,CR,SD2,SD5,SD7 decNode;
+  class RC,CR,SD2,SD5,SD7,SKIP decNode;
   class INFRA,SD1,SD3,SD4,SD6,SD8,SD9,BE,FEC seedNode;
   class PV noteNode;
 
@@ -394,11 +414,15 @@ flowchart TD
   <br/><br/>
   <strong>If seed exhausts all 3 attempts (SD9, EXIT 1):</strong> the backend container never starts (its
   service_completed_successfully dependency is never satisfied). The frontend container, however, is NOT gated on the backend's
-  readiness — it starts independently and serves the React app normally. A user opening the app sees the UI shell and
-  RestaurantSelector load fine, but GET /restaurants fails; the selector's isError state renders "Server unavailable. Is the
-  backend running?" with a Retry button rather than an infinite spinner or a cryptic network error. This is a deliberate
-  fail-closed design at the data layer (never serve queries against a partially/incorrectly ingested dataset) paired with a
-  fail-open UI shell (the frontend itself never crashes just because the backend isn't up yet).
+  readiness — it starts independently and serves the React app normally. A user opening the app sees the LoginPage render fine,
+  but its POST /auth/token call fails with a clear "server unavailable" error rather than an infinite spinner or a cryptic
+  network error. This is a deliberate fail-closed design at the data layer (never serve queries against a partially/incorrectly
+  ingested dataset) paired with a fail-open UI shell (the frontend itself never crashes just because the backend isn't up yet).
+  <br/><br/>
+  <strong>Login is a two-key model:</strong> the shared API_KEY (shipped in the frontend bundle — Vite inlines VITE_* vars at
+  build time) only proves "this is a legitimate client app," not which restaurant. POST /auth/token additionally requires a
+  per-restaurant restaurant_key (verified against a SHA-256 hash in restaurant_credential) before it will mint a JWT scoped to
+  that restaurant_id — closing a real gap where the shared key alone used to be enough to mint a token for any restaurant.
 </footer>
 
 <script type="module">

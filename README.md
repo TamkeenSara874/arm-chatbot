@@ -12,9 +12,13 @@ Built for the AIO Internship project using FastAPI, Qdrant, PostgreSQL, Redis, a
 - Streams answers token-by-token with source citations from real reviews
 - Routes simple queries to GPT-4o-mini (~$0.0003 typical) and complex aggregation to GPT-4.1 (~$0.005-0.015)
 - Short-circuits count queries directly to PostgreSQL with zero LLM cost
-- Caches repeated questions in Redis (24-hour TTL)
-- Generates downloadable PDF insight reports covering sentiment, ratings, and entity mentions
-- Remembers conversation context across turns using semantic retrieval from Qdrant
+- Grounds broad "how can I improve?" questions in the real complaint themes found first, before adding any general advice — and never invents a sales/revenue number reviews don't contain
+- Caches repeated questions two ways: exact-text (Redis) and semantic/paraphrase (Qdrant similarity search)
+- Generates a downloadable PDF insights report with charts (rating distribution, sentiment, source breakdown, top praised/complained) alongside the narrative summary
+- Remembers conversation context across turns, and across a restaurant's *entire* chat history (not just the current session), via semantic retrieval from Qdrant
+- Lets restaurant owners flag a wrong answer; a single flag is treated as an unverified aside, 3+ distinct flags become a confirmed correction that supersedes future evidence
+- Supports live, single-review ingestion the moment a review posts or is edited, in addition to batch file upload — and a retried batch job never re-processes reviews it already finished
+- Logs in per restaurant via a real access key (not an open restaurant picker) — closes a real gap where a shared dev key alone used to be enough to query any restaurant's data
 
 ---
 
@@ -22,28 +26,36 @@ Built for the AIO Internship project using FastAPI, Qdrant, PostgreSQL, Redis, a
 
 ```
 React Frontend (Vite + TypeScript + Tailwind)
-        │  REST + SSE stream
+        │  LoginPage → POST /auth/token (restaurant_id + restaurant_key → JWT)
+        │  REST + SSE stream (Bearer JWT)
         ▼
 FastAPI /api/v1/
         │
-        ├─ Redis cache  (TTL 24h, SHA256 key)
+        ├─ Cache check  (Redis exact-text, TTL 24h  +  Qdrant semantic, cosine ≥0.95)
         ├─ Guardrail    (out-of-scope → polite decline; report_howto → answered directly; ui_question → CareBot)
-        ├─ Query decomposition  Groq llama-3.3-70b  (~300ms)
-        │       └─ intent · filters · sub-queries · complexity
+        ├─ Query decomposition  Groq llama-3.3-70b  (~300ms, rotates across free-tier keys on rate limit)
+        │       └─ intent · filters · sub-queries · complexity · needs_aggregation
         │
         ├─ count_query  → Postgres COUNT(*)  $0, <100ms
-        ├─ report       → OpenAI tool call + DB/Qdrant aggregation
+        ├─ report       → OpenAI tool call + DB/Qdrant aggregation → markdown + charts
         ├─ simple       → GPT-4o-mini  ~$0.0003
         └─ complex      → GPT-4.1       ~$0.005-0.015
                 │
+                ├─ Retrieval params: top_k=20 for aggregation/improvement questions, else 6
                 ├─ Hybrid retrieval: Qdrant dense ANN + native sparse (fastembed BM25) + correction ANN
-                ├─ Cross-encoder reranking: cross-encoder/ms-marco-MiniLM-L-6-v2 (local, free)
-                ├─ Evidence ranking: RRF + recency decay + rating signal
+                ├─ Cross-encoder reranking: cross-encoder/ms-marco-MiniLM-L6-v2, ONNX int8 quantized, batch_size=8
+                ├─ Evidence ranking: reranker relevance + recency decay + rating signal
+                ├─ Correction lookup: is_consensus (3+ flags) → supersedes evidence; single flag → unverified aside
+                ├─ Session context: last 5 turns + restaurant-wide semantic recall (90-day staleness cutoff)
                 └─ SSE token stream → structured metadata in final event
 
+Ingestion
+  Batch    POST /ingest         → chunk → entity-extract → embed → upsert, per-batch, resumable on retry
+  Live     POST /ingest/review  → same steps for one review; repeat call = update, not duplicate
+
 Storage
-  PostgreSQL   chat_session · chat_message · chat_correction · review_chunk_meta · ingest_job
-  Qdrant       review_chunks (3072-dim dense + sparse)  ·  correction_embeddings  ·  session_memory
+  PostgreSQL   chat_session · chat_message · chat_correction · review_chunk_meta · ingest_job · restaurant_credential
+  Qdrant       review_chunks (3072-dim dense + sparse) · correction_embeddings · session_memory · chat_cache
   Redis        response cache · rate-limit counters
 ```
 
@@ -67,7 +79,8 @@ Storage
 | LLM           | OpenAI GPT-4.1 / GPT-4o-mini · Groq llama-3.3-70b    |
 | Embeddings    | text-embedding-3-large (3072 dims)                      |
 | Vector DB     | Qdrant 1.10                                             |
-| Reranker      | cross-encoder/ms-marco-MiniLM-L-6-v2 (local, sentence-transformers) |
+| Reranker      | cross-encoder/ms-marco-MiniLM-L6-v2, ONNX int8 quantized (local, sentence-transformers) |
+| Charts        | Recharts (frontend insights report)                     |
 | Database      | PostgreSQL 16 + SQLAlchemy async + Alembic              |
 | Cache         | Redis 7                                                 |
 | Frontend      | React 18 · TypeScript · Vite · Tailwind CSS             |
@@ -138,37 +151,40 @@ pytest --cov=src -v
 
 # Seed data for restaurant_id=1 (the only restaurant seeded by default --
 # scripts/seed.py ingests dataset/dataset.json for RESTAURANT_ID=1 only).
-# The multi-tenancy selector still works and enforces real isolation, but
-# demoing it against a second populated tenant requires a second dataset
-# ingested manually via POST /api/v1/ingest with restaurant_id=2.
+# Per-restaurant login/JWT isolation is real and enforced, but demoing it
+# against a second populated tenant requires a second dataset ingested
+# manually via POST /api/v1/ingest with restaurant_id=2.
 python scripts/seed.py
 
-# Evaluate retrieval quality (P@5, Recall@5, MRR)
-python scripts/eval_retrieval.py --k 5
+# Smoke test the running stack
+python scripts/smoke_test.py
 
-# Load test (50 concurrent queries, P50/P95 latency)
-python scripts/load_test.py --n 50
+# Provision/reissue a restaurant's login key
+python scripts/create_restaurant_credential.py <restaurant_id>
 ```
 
 ---
 
 ## API Reference
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/chat/sessions` | Create a new chat session |
-| POST | `/api/v1/chat/query` | Send a message (SSE stream) |
-| GET | `/api/v1/chat/sessions/{id}/history` | Fetch message history |
-| POST | `/api/v1/chat/correct` | Submit a correction |
-| POST | `/api/v1/chat/report` | Generate an insights report |
-| POST | `/api/v1/ingest` | Upload a reviews JSON file |
-| GET | `/api/v1/ingest/{job_id}/status` | Poll ingestion progress |
-| GET | `/api/v1/restaurants` | List available restaurants |
-| GET | `/api/v1/health` | Liveness check |
-| GET | `/api/v1/health/ready` | Readiness check (DB + Qdrant) |
-| GET | `/api/v1/health/metrics` | Prometheus metrics (auth required) |
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| POST | `/api/v1/auth/token` | Exchange `restaurant_id` + `restaurant_key` for a JWT | Shared `API_KEY` |
+| POST | `/api/v1/chat/sessions` | Create a new chat session | Restaurant JWT |
+| POST | `/api/v1/chat/query` | Send a message (SSE stream) | Restaurant JWT |
+| GET | `/api/v1/chat/sessions/{id}/history` | Fetch message history | Restaurant JWT |
+| POST | `/api/v1/chat/correct` | Submit a correction (auto-confirms at 3 flags) | Restaurant JWT |
+| POST | `/api/v1/chat/{message_id}/feedback` | Submit thumbs-up feedback | Restaurant JWT |
+| POST | `/api/v1/chat/report` | Generate an insights report | Restaurant JWT |
+| POST | `/api/v1/ingest` | Upload a reviews JSON file (batch, resumable) | Shared `API_KEY` |
+| POST | `/api/v1/ingest/review` | Push one review live (create or update) | Shared `API_KEY` |
+| GET | `/api/v1/ingest/{job_id}/status` | Poll ingestion progress | Shared `API_KEY` |
+| GET | `/api/v1/restaurants` | List available restaurants (ops/admin, not used by the login flow) | Shared `API_KEY` |
+| GET | `/api/v1/health` | Liveness check | None |
+| GET | `/api/v1/health/ready` | Readiness check (DB + Qdrant) | None |
+| GET | `/api/v1/health/metrics` | Prometheus metrics | Shared `API_KEY` |
 
-All endpoints except `/health` and `/health/ready` require `Authorization: Bearer <API_KEY>`.
+Two distinct Bearer tokens exist: the shared `API_KEY` (proves "legitimate client app," used for auth/ingest routes) and a per-restaurant JWT (minted by `/auth/token`, scoped to one `restaurant_id`, used for all `/chat/*` routes — the backend enforces the JWT's claim regardless of what a request body sends).
 
 **SSE stream format** (`POST /api/v1/chat/query`)
 
@@ -209,14 +225,51 @@ Upload a JSON file exported from ARM's review pipeline. Expected structure:
 - `sentiment` is pre-computed by ARM's pipeline — it is used as-is, not recomputed
 - Malformed `createdAt` falls back to `datetime.now()` with a WARNING logged
 - Missing fields get safe defaults (rating → null, username → "Anonymous", sentiment → "Neutral")
+- A retried/resumed batch job skips any review it already fully processed under the current pipeline version — no wasted OpenAI calls on a retry
+
+**Live, single-review ingestion** (`POST /api/v1/ingest/review`) — for pushing one review the moment it's posted or edited, instead of a full batch re-upload:
+
+```json
+{
+  "restaurant_id": 1,
+  "external_review_id": "source-systems-own-review-id",
+  "review": "Amazing biryani!",
+  "rating": 5,
+  "username": "John D.",
+  "sentiment": "Positive",
+  "source": "Google",
+  "created_at": "2025-01-15T12:00:00"
+}
+```
+
+`external_review_id` must be a stable ID from the source system — calling this again with the same ID is a genuine update (reuses the same chunks, cleans up any now-stale ones), not a duplicate.
+
+---
+
+## Deployment
+
+Production Dockerfiles exist for both services:
+
+- `infra/docker/backend/Dockerfile` — multi-stage FastAPI image, runs migrations then `uvicorn` as a non-root user
+- `infra/docker/frontend/Dockerfile` — multi-stage Vite build served by nginx
+
+```bash
+docker build -f infra/docker/backend/Dockerfile -t arm-chatbot-backend:latest .
+docker build -f infra/docker/frontend/Dockerfile -t arm-chatbot-frontend:latest \
+  --build-arg VITE_API_URL=https://your-deployed-backend-url .
+```
+
+No cloud target has been chosen yet — these images build and run anywhere that runs a container, but provisioning an actual Railway/ECS/Cloud Run deployment is a separate, not-yet-taken step. See [`docs/runbook.md`](docs/runbook.md) for the full build/push procedure, required secrets, and what's left to wire up a real deploy target.
 
 ---
 
 ## Known Limitations
 
-**Multi-tenancy (demo only):** The dropdown lets any user query any restaurant. Production requires a JWT with a `restaurant_id` claim that the backend enforces, ignoring whatever the frontend sends.
+**Only restaurant_id=1 is seeded.** The multi-tenancy login/JWT isolation is real and enforced, but only one restaurant's dataset is auto-seeded; demoing a second, populated tenant requires either sourcing a second dataset or ingesting one manually via `POST /api/v1/ingest`.
 
 **Cost is exact, not estimated:** Both streaming and non-streaming LLM calls request `stream_options={"include_usage": true}` / read `response.usage` directly, so `cost_usd` in every trace reflects real provider-reported token counts and known model pricing rather than a character-count approximation.
+
+**No cloud deployment target chosen yet.** Production Dockerfiles exist (`infra/docker/`), but the app currently only runs via local `docker compose`. See [Deployment](#deployment) below.
 
 ---
 

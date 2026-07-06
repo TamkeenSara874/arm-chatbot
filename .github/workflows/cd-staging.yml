@@ -1,0 +1,60 @@
+name: CD Staging
+
+# Builds and pushes container images on every merge to main. Does NOT deploy
+# anywhere yet -- no cloud target has been chosen (see docs/runbook.md). This
+# workflow is the "build once, deploy later" half: once a platform is picked,
+# add a deploy job at the bottom that pulls the image tag this job pushes.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BASE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build and push (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: backend
+            dockerfile: infra/docker/backend/Dockerfile
+          - service: frontend
+            dockerfile: infra/docker/frontend/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.IMAGE_BASE }}-${{ matrix.service }}:staging
+            ${{ env.IMAGE_BASE }}-${{ matrix.service }}:staging-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Deploy target not yet chosen ──────────────────────────────────────────
+  # When one is: add a job here that pulls
+  # ghcr.io/<repo>-backend:staging-${{ github.sha }} (and -frontend) and
+  # deploys it to the staging environment for whichever platform is picked
+  # (Railway/ECS/Cloud Run). See docs/runbook.md for the env vars/secrets
+  # each image needs at runtime.
