@@ -13,8 +13,6 @@ from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy import distinct, select
 from sqlalchemy.exc import IntegrityError
 
@@ -26,6 +24,7 @@ from src.api.dependencies import (
     get_simple_client,
     get_vector_store,
 )
+from src.api.rate_limit import limiter
 from src.config import get_settings
 from src.models.db_entities import IngestJob, ReviewChunkMeta
 from src.models.schemas import (
@@ -44,7 +43,6 @@ from src.workers.ingest_worker import ingest_single_review, run_ingest_job
 
 logger = structlog.get_logger()
 
-limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/api/v1", tags=["ingest"])
 
 settings = get_settings()
