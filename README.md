@@ -12,7 +12,8 @@ Built for the AIO Internship project using FastAPI, Qdrant, PostgreSQL, Redis, a
 - Streams answers token-by-token with source citations from real reviews
 - Routes simple queries to GPT-4o-mini (~$0.0003 typical) and complex aggregation to GPT-4.1 (~$0.005-0.015)
 - Short-circuits count queries directly to PostgreSQL with zero LLM cost
-- Grounds broad "how can I improve?" questions in the real complaint themes found first, before adding any general advice — and never invents a sales/revenue number reviews don't contain
+- Grounds broad "how can I improve?" questions in the real complaint themes found first, before adding any general advice, and cites real counts (e.g. "3 of the 20 reviews mention...") instead of vague words like "several" — never invents a sales/revenue number reviews don't contain
+- Answers questions about the conversation itself (e.g. "what did we talk about before?") from conversation memory alone, with no fake review evidence or confidence score attached, and honestly distinguishes this conversation from an earlier, separate one
 - Caches repeated questions two ways: exact-text (Redis) and semantic/paraphrase (Qdrant similarity search)
 - Generates a downloadable PDF insights report with charts (rating distribution, sentiment, source breakdown, top praised/complained) alongside the narrative summary
 - Remembers conversation context across turns, and across a restaurant's *entire* chat history (not just the current session), via semantic retrieval from Qdrant
@@ -35,8 +36,12 @@ FastAPI /api/v1/
         ├─ Guardrail    (out-of-scope → polite decline; report_howto → answered directly; ui_question → CareBot)
         ├─ Query decomposition  Groq llama-3.3-70b  (~300ms, rotates across free-tier keys on rate limit)
         │       └─ intent · filters · sub-queries · complexity · needs_aggregation
+        │       (session context scoped to reference resolution only -- never
+        │        allowed to override classification of a self-contained query)
         │
-        ├─ count_query  → Postgres COUNT(*)  $0, <100ms
+        ├─ conversation_recall → session context only, $0 retrieval, gpt-4o-mini
+        ├─ count_query  → Postgres COUNT(*)  $0, <100ms (deterministic sentiment-
+        │                 keyword override backs up decomposition's own extraction)
         ├─ report       → OpenAI tool call + DB/Qdrant aggregation → markdown + charts
         ├─ simple       → GPT-4o-mini  ~$0.0003
         └─ complex      → GPT-4.1       ~$0.005-0.015
@@ -304,6 +309,8 @@ Prometheus metrics exposed at `/api/v1/health/metrics` (Bearer auth required):
 - `guardrail_triggered_total` — counter by type
 
 Errors are reported to Sentry when `SENTRY_DSN` is set.
+
+**Verifying prompt/session-context correctness:** set `LOG_LEVEL=DEBUG` to see `decomposition_prompt` and `generation_prompt` structured log events containing the exact system/user prompt text sent to each LLM call, session context included -- useful for confirming what a model actually saw versus what `request_traces.jsonl`'s classified `intent`/`complexity` fields alone can tell you.
 
 ---
 
