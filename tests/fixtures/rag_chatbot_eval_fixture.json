@@ -461,6 +461,43 @@
     },
 
     {
+      "test_id": "CQ-03",
+      "category": "count_query_fast_path",
+      "subcategory": "compound_count_and_topics",
+      "description": "Compound question mixing an exact count with a qualitative summary must still get the exact DB count, not a self-counted estimate over retrieved evidence only.",
+      "restaurant_id": "REST_DOWNTOWN_001",
+      "turns": [{ "role": "user", "content": "Tell me the total number of positive reviews and the major positive review topics." }],
+      "expected_path": "count_query",
+      "expected_flags": {
+        "router_decision": "count_query",
+        "sub_queries_populated": true,
+        "generation_llm_called": true
+      },
+      "assertions": [
+        "The answer states the total positive review count as a specific verbatim number (phrased like an exact database total, e.g. \"you have N positive reviews in total\"), not a vague estimate or a count scoped to only the retrieved sample",
+        "The answer also describes major recurring positive topics/themes"
+      ],
+      "priority": "P0"
+    },
+    {
+      "test_id": "NP-01",
+      "category": "named_person",
+      "subcategory": "staff_mention_vs_reviewer_identity",
+      "description": "A question about a named person who appears as a staff mention WITHIN review text (not as a review author/username) must be answered from that text, not declared \"not found\" just because the name isn't a username.",
+      "restaurant_id": "REST_DOWNTOWN_001",
+      "turns": [{ "role": "user", "content": "What do customers say about Katherine?" }],
+      "expected_path": "specific_aspect",
+      "expected_flags": {
+        "evidence_retrieved": true
+      },
+      "assertions": [
+        "The answer does not claim no reviewer or mention of that name was found, given the name appears within retrieved review text",
+        "The answer summarizes what reviewers said about this person"
+      ],
+      "priority": "P0"
+    },
+
+    {
       "test_id": "RB-01",
       "category": "retrieval_fallback",
       "description": "Simulated Qdrant outage should degrade gracefully to BM25-only retrieval via the circuit breaker, not fail the query.",

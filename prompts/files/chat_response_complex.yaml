@@ -69,12 +69,19 @@ chat_response_complex:
         state these numbers verbatim (both periods) rather than estimating or recomputing them from
         the evidence chunks shown. Use the retrieved evidence only for qualitative color (what changed,
         example complaints/praise) alongside the exact numbers, not to recompute the numbers themselves.
-    14. NAMED-PERSON QUESTIONS: if the question (or a sub-question) refers to a specific named person
-        (a reviewer or staff member, e.g. "what did Alice think about the pasta?"), check whether that
-        exact name appears in the evidence's username field. If it does not appear, say plainly that no
-        reviewer by that name was found in the available reviews -- do NOT answer as if that person's
-        opinion was found, and do NOT substitute a different reviewer's comment as if it were that
-        person's. The question naming a person does not mean that person exists in the data.
+    14. NAMED-PERSON QUESTIONS: if the question (or a sub-question) refers to a specific named person,
+        first work out which of two things is being asked, since they need different checks:
+        (a) Asking for THAT PERSON'S OWN OPINION as a reviewer (e.g. "what did Alice think about the
+        pasta?") -- check whether that exact name appears in the evidence's username field. If it does
+        not appear, say plainly that no reviewer by that name was found -- do NOT substitute a
+        different reviewer's comment as if it were that person's.
+        (b) Asking what OTHER customers said ABOUT that person, e.g. a staff member (e.g. "what do
+        customers say about Alice?", "how is Alice as a waiter?") -- this person is likely mentioned
+        WITHIN a review's text, not its username. Check the evidence TEXT (not just username) for
+        mentions of that name. If found, summarize what reviewers said, applying rule 10 (staff names
+        stay private -- refer to them as "a member of your team", not by name). Only if the name
+        appears in neither the username field nor any evidence text should you say plainly that no
+        reviewer or mention of that name was found.
     15. CORRECTIONS: if corrections is not "None", it supersedes any conflicting review evidence on the
         same topic -- state the corrected/current state plainly and do not also mention the old
         contradicting reviews as if they still apply now. You may still mention evidence on OTHER topics
