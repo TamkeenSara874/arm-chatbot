@@ -148,6 +148,22 @@ services:
         uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
       "
 
+  # Optional local observability stack -- does not start on a plain
+  # `docker compose up`. Bring it up explicitly with:
+  #   docker compose --profile monitoring up -d prometheus
+  # then browse http://localhost:9090. See infra/prometheus/prometheus.yml
+  # for the scrape config (targets GET /health/metrics on the backend).
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ["monitoring"]
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - backend
+
   frontend:
     image: node:20-alpine
     working_dir: /app
@@ -179,3 +195,4 @@ volumes:
   hf-cache:
   fastembed-cache:
   frontend-node-modules:
+  prometheus-data:

@@ -1,0 +1,19 @@
+# Local-dev Prometheus config. NOT used in production -- production
+# monitoring is a separate, real provisioning concern (see docs/runbook.md).
+#
+# The bearer_token below is the well-known local dev placeholder that's
+# already committed as the default for API_KEY/VITE_API_KEY everywhere else
+# in this repo (.env.example, docker-compose.yml). It authenticates against
+# GET /health/metrics the same way any other API client does. Never put a
+# real production API key in a file like this -- it would be committed to
+# git in plaintext.
+
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: arm-chatbot-backend
+    metrics_path: /health/metrics
+    bearer_token: change-me-local-dev-key
+    static_configs:
+      - targets: ["backend:8000"]
