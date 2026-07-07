@@ -174,7 +174,21 @@ async def chat_query(
     if cached_data:
         trace.cache_hit = True
         trace.emit()
-        return EventSourceResponse(_yield_cached(cached_data, body.session_id))
+        cache_msg_id = uuid.uuid4()
+        fire_and_forget(
+            _persist_instant_exchange(
+                session_id=body.session_id,
+                message_id=cache_msg_id,
+                sanitized=sanitized,
+                answer=cached_data.get("answer", ""),
+                model_used=cached_data.get("model_used", "cache"),
+                restaurant_id=restaurant_id,
+                embedder=embedder,
+                vector_store=vector_store,
+            ),
+            name=f"persist-cache-{cache_msg_id}",
+        )
+        return EventSourceResponse(_yield_cached(cached_data, body.session_id, cache_msg_id))
 
     # Query decomposition. Embedding is deliberately NOT computed here in
     # parallel: retrieval must use decomposed.rephrased_query (pronoun
@@ -344,7 +358,21 @@ async def chat_query(
     if cached_semantic:
         trace.cache_hit = True
         trace.emit()
-        return EventSourceResponse(_yield_cached(cached_semantic, body.session_id))
+        semantic_msg_id = uuid.uuid4()
+        fire_and_forget(
+            _persist_instant_exchange(
+                session_id=body.session_id,
+                message_id=semantic_msg_id,
+                sanitized=sanitized,
+                answer=cached_semantic.get("answer", ""),
+                model_used=cached_semantic.get("model_used", "cache"),
+                restaurant_id=restaurant_id,
+                embedder=embedder,
+                vector_store=vector_store,
+            ),
+            name=f"persist-semantic-cache-{semantic_msg_id}",
+        )
+        return EventSourceResponse(_yield_cached(cached_semantic, body.session_id, semantic_msg_id))
 
     # Full pipeline inside the SSE generator
     return EventSourceResponse(
@@ -1150,7 +1178,9 @@ async def _persist_instant_exchange(
         logger.warning("instant_persist_failed", error=str(exc))
 
 
-async def _yield_cached(data: dict, session_id: uuid.UUID) -> AsyncGenerator[dict, None]:
+async def _yield_cached(
+    data: dict, session_id: uuid.UUID, message_id: uuid.UUID
+) -> AsyncGenerator[dict, None]:
     """Emit a cached response as a single 'done' SSE event."""
     response = ChatResponseSchema(
         answer=data.get("answer", ""),
@@ -1161,7 +1191,7 @@ async def _yield_cached(data: dict, session_id: uuid.UUID) -> AsyncGenerator[dic
         source_breakdown=data.get("source_breakdown", {}),
     )
     payload = {
-        "message_id": str(uuid.uuid4()),
+        "message_id": str(message_id),
         "session_id": str(session_id),
         "response": response.model_dump(),
         "cached": True,
