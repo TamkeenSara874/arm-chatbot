@@ -118,7 +118,7 @@ class TestRotatingGroqClient:
 
         await client.complete("prompt", usage_callback=callback)
 
-        callback.assert_called_once_with(100, 20)
+        callback.assert_called_once_with(100, 20, 0)
 
     @pytest.mark.asyncio
     async def test_stream_not_implemented(self) -> None:

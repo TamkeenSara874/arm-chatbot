@@ -309,7 +309,7 @@ async def _process_rows(
             llm_client,
             entity_semaphore,
             entity_batch,
-            usage_callback=lambda p, c: trace.record_entity_tokens(entity_model_name, p, c),
+            usage_callback=lambda p, c, ca: trace.record_entity_tokens(entity_model_name, p, c),
         )
         trace.entity_extraction_ms += (time.perf_counter() - t_entities) * 1000.0
 

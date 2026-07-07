@@ -39,6 +39,7 @@ class RequestTrace:
     generation_model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_tokens: int = 0
     cost_usd: float = 0.0
 
     confidence: float = 0.0
@@ -57,12 +58,25 @@ class RequestTrace:
             + self.generation_ms
         )
 
-    def record_tokens(self, model: str, prompt_tokens: int, completion_tokens: int = 0) -> None:
-        """Accumulate token counts and update the running cost estimate."""
+    def record_tokens(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int = 0,
+        cached_tokens: int = 0,
+    ) -> None:
+        """Accumulate token counts and update the running cost estimate.
+
+        cached_tokens (a subset of prompt_tokens OpenAI's automatic prompt
+        caching served from cache) is tracked separately for observability
+        only -- it doesn't yet feed estimate_cost, since a per-model cached
+        discount isn't wired up there.
+        """
         from src.utils.cost_tracker import estimate_cost
 
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
+        self.cached_tokens += cached_tokens
         self.cost_usd += estimate_cost(model, prompt_tokens, completion_tokens)
 
     def emit(self) -> None:
@@ -101,6 +115,7 @@ class RequestTrace:
             "generation_model": self.generation_model,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "cached_tokens": self.cached_tokens,
             "cost_usd": round(self.cost_usd, 6),
             "confidence": round(self.confidence, 3),
             "evidence_count": self.evidence_count,

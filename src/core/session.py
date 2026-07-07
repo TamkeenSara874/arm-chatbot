@@ -113,6 +113,7 @@ async def build_session_context(
     recent_k: int = 5,
     relevant_k: int = 3,
     token_budget: int = 6000,
+    precomputed_query_vector: list[float] | None = None,
 ) -> str:
     """Build a combined context string for injection into the chat prompt.
 
@@ -128,6 +129,10 @@ async def build_session_context(
     3. The last recent_k message pairs verbatim for immediate continuity
 
     The combined block is trimmed to token_budget before returning.
+
+    precomputed_query_vector lets a caller that already embedded current_query
+    (e.g. to also call find_correction() on the same text) skip a second,
+    redundant embedding call.
     """
     session_row = await db_session.get(ChatSession, session_id)
     summary = session_row.summary if session_row else None
@@ -145,7 +150,11 @@ async def build_session_context(
     recent_contents: set[str] = {m.content for m in recent_messages}
 
     try:
-        query_vector = await embedder.embed_one(current_query)
+        query_vector = (
+            precomputed_query_vector
+            if precomputed_query_vector is not None
+            else await embedder.embed_one(current_query)
+        )
         ann_results = await vector_store.search(
             SESSION_MEMORY_COLLECTION,
             query_vector,

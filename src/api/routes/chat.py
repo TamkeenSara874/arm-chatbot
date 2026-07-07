@@ -8,6 +8,7 @@
 # dependency injection, and every such route 422s on any real request. See
 # the identical fix + repro notes in src/api/routes/ingest.py.
 
+import asyncio
 import contextlib
 import json
 import time
@@ -210,7 +211,7 @@ async def chat_query(
         decomp_client,
         decomp_user,
         decomp_system,
-        usage_callback=lambda p, c: trace.record_tokens(settings.groq_decomp_model, p, c),
+        usage_callback=lambda p, c, ca: trace.record_tokens(settings.groq_decomp_model, p, c, ca),
     )
     trace.decomp_ms = (time.perf_counter() - t_decomp) * 1000.0
     trace.intent = decomposed.intent
@@ -261,7 +262,9 @@ async def chat_query(
         recall_answer = await simple_client.complete(
             recall_user,
             recall_system,
-            usage_callback=lambda p, c: trace.record_tokens(settings.openai_simple_model, p, c),
+            usage_callback=lambda p, c, ca: trace.record_tokens(
+                settings.openai_simple_model, p, c, ca
+            ),
         )
         trace.generation_ms = (time.perf_counter() - t_recall) * 1000.0
         trace.generation_model = settings.openai_simple_model
@@ -843,17 +846,46 @@ async def _pipeline_stream(
             trace.generation_ms = 0.0
             trace.generation_model = model_used
         else:
+            # Correction lookup and session context have no data dependency on
+            # each other, and both independently embed this same query text --
+            # embed it once here and run both concurrently instead of two
+            # sequential calls each re-embedding the same string. On an embed
+            # failure here, query_vector stays None and each function falls
+            # back to embedding it itself (their existing per-function
+            # try/except already tolerates that), so this is a pure latency
+            # optimization with no change to failure-mode behavior.
+            try:
+                query_vector = await embedder.embed_one(sanitized)
+            except Exception as exc:
+                logger.warning("shared_query_embed_failed", error=str(exc))
+                query_vector = None
+
             # Correction lookup. A single flag isn't confirmed -- route it into
             # unverified_note (informational only) rather than corrections
             # (treated as ground truth, overriding conflicting evidence) until
             # it reaches CONSENSUS_THRESHOLD distinct flags.
-            correction_match = await find_correction(
-                query=sanitized,
-                restaurant_id=restaurant_id,
-                intent=decomposed.intent,
-                embedder=embedder,
-                vector_store=vector_store,
-                threshold=settings_.correction_sim_threshold,
+            correction_match, session_context = await asyncio.gather(
+                find_correction(
+                    query=sanitized,
+                    restaurant_id=restaurant_id,
+                    intent=decomposed.intent,
+                    embedder=embedder,
+                    vector_store=vector_store,
+                    threshold=settings_.correction_sim_threshold,
+                    precomputed_vector=query_vector,
+                ),
+                build_session_context(
+                    session_id=body.session_id,
+                    restaurant_id=restaurant_id,
+                    current_query=sanitized,
+                    db_session=db,
+                    vector_store=vector_store,
+                    embedder=embedder,
+                    recent_k=settings_.session_recent_messages,
+                    relevant_k=settings_.session_relevant_k,
+                    token_budget=settings_.session_context_token_budget,
+                    precomputed_query_vector=query_vector,
+                ),
             )
             confirmed_correction = "None"
             unverified_note = "None"
@@ -862,19 +894,6 @@ async def _pipeline_stream(
                     confirmed_correction = correction_match.text
                 else:
                     unverified_note = correction_match.text
-
-            # Session context
-            session_context = await build_session_context(
-                session_id=body.session_id,
-                restaurant_id=restaurant_id,
-                current_query=sanitized,
-                db_session=db,
-                vector_store=vector_store,
-                embedder=embedder,
-                recent_k=settings_.session_recent_messages,
-                relevant_k=settings_.session_relevant_k,
-                token_budget=settings_.session_context_token_budget,
-            )
 
             selection = select_generation(
                 decomposed, precomputed_count, settings_, precomputed_trend
@@ -907,7 +926,7 @@ async def _pipeline_stream(
                 system=gen_system,
                 max_tokens=800 if selection.is_complex else 400,
                 temperature=0.3,
-                usage_callback=lambda p, c: trace.record_tokens(model_used, p, c),
+                usage_callback=lambda p, c, ca: trace.record_tokens(model_used, p, c, ca),
             ):
                 full_answer += token
                 yield {"event": "token", "data": token}
