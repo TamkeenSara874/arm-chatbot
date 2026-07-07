@@ -156,7 +156,8 @@ class RotatingGroqClient(BaseLLMClient):
                 ],
             )
             if usage_callback and response.usage:
-                usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens)
+                # Groq's usage payload has no prompt-caching signal.
+                usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens, 0)
             return response.choices[0].message.content or ""
 
         return await self._call_with_rotation(_call, label="complete")
@@ -183,7 +184,8 @@ class RotatingGroqClient(BaseLLMClient):
             )
             raw = response.choices[0].message.content or "{}"
             if usage_callback and response.usage:
-                usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens)
+                # Groq's usage payload has no prompt-caching signal.
+                usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens, 0)
             return response_format.model_validate_json(raw)
 
         return await self._call_with_rotation(_call, label="complete_structured")

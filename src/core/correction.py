@@ -30,6 +30,7 @@ async def find_correction(
     embedder: BaseEmbedder,
     vector_store: BaseVectorStore,
     threshold: float = 0.85,
+    precomputed_vector: list[float] | None = None,
 ) -> CorrectionMatch | None:
     """Search for a stored correction that matches the current query and context.
 
@@ -45,9 +46,17 @@ async def find_correction(
 
     Intent cross-check prevents a correction for one query type from being
     incorrectly applied to a different query type even if the text is similar.
+
+    precomputed_vector lets a caller that already embedded this exact query
+    text (e.g. to also call build_session_context() on the same text) skip a
+    second, redundant embedding call.
     """
     try:
-        vector = await embedder.embed_one(query)
+        vector = (
+            precomputed_vector
+            if precomputed_vector is not None
+            else await embedder.embed_one(query)
+        )
         results = await vector_store.search(
             CORRECTION_COLLECTION,
             vector,

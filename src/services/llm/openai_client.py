@@ -14,6 +14,12 @@ from src.utils.retry import fetch_with_retry
 logger = structlog.get_logger()
 
 
+def _cached_tokens(usage) -> int:
+    """Extract prompt_tokens_details.cached_tokens, defaulting to 0 if absent."""
+    details = getattr(usage, "prompt_tokens_details", None)
+    return getattr(details, "cached_tokens", None) or 0
+
+
 class OpenAIClient(BaseLLMClient):
     """OpenAI client. One instance per model; use factory to get simple/complex variants."""
 
@@ -40,7 +46,11 @@ class OpenAIClient(BaseLLMClient):
                 ],
             )
             if usage_callback and response.usage:
-                usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens)
+                usage_callback(
+                    response.usage.prompt_tokens,
+                    response.usage.completion_tokens,
+                    _cached_tokens(response.usage),
+                )
             return response.choices[0].message.content or ""
 
         start = time.perf_counter()
@@ -79,7 +89,11 @@ class OpenAIClient(BaseLLMClient):
             if parsed is None:
                 raise ValueError("OpenAI structured output returned None parsed result")
             if usage_callback and response.usage:
-                usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens)
+                usage_callback(
+                    response.usage.prompt_tokens,
+                    response.usage.completion_tokens,
+                    _cached_tokens(response.usage),
+                )
             return parsed
 
         start = time.perf_counter()
@@ -126,7 +140,11 @@ class OpenAIClient(BaseLLMClient):
             # The final chunk of a stream_options={"include_usage": True} stream
             # carries usage with an empty choices list -- guard the index access.
             if usage_callback and chunk.usage:
-                usage_callback(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+                usage_callback(
+                    chunk.usage.prompt_tokens,
+                    chunk.usage.completion_tokens,
+                    _cached_tokens(chunk.usage),
+                )
             if not chunk.choices:
                 continue
             content = chunk.choices[0].delta.content

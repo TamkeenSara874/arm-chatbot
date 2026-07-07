@@ -11,10 +11,13 @@ logger = structlog.get_logger()
 
 BaseModelT = TypeVar("BaseModelT", bound=BaseModel)
 
-# Invoked with (prompt_tokens, completion_tokens) once real usage is known.
-# Optional and additive: callers that don't pass one see no behavior change,
-# which is why this doesn't touch the return type of complete()/stream().
-UsageCallback = Callable[[int, int], None]
+# Invoked with (prompt_tokens, completion_tokens, cached_tokens) once real
+# usage is known. cached_tokens is the portion of prompt_tokens OpenAI's
+# automatic prompt caching served from cache (0 for providers/calls with no
+# such signal, e.g. Groq). Optional and additive: callers that don't pass a
+# callback see no behavior change, which is why this doesn't touch the
+# return type of complete()/stream().
+UsageCallback = Callable[[int, int, int], None]
 
 
 class AllModelsFailedError(Exception):
