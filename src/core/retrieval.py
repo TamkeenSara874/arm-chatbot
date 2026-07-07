@@ -50,8 +50,22 @@ def build_retrieval_params(decomposed: DecomposedQuery) -> RetrievalParams:
     """
     # Improvement queries are inherently broad ("how can I improve?") -- force
     # the wider top_k regardless of whether the model set needs_aggregation,
-    # rather than relying on it to infer that on its own every time.
-    is_aggregation = decomposed.needs_aggregation or decomposed.intent == "improvement"
+    # rather than relying on it to infer that on its own every time. Same
+    # logic for a compound count_query (non-empty sub_queries): the count
+    # half is answered exactly via direct SQL regardless of top_k, but the
+    # sub_queries half (e.g. "...and the major topics", "...and how can I
+    # improve") is a real qualitative question that needs the same wide
+    # evidence pool an aggregation/improvement query gets -- confirmed live
+    # that needs_aggregation is NOT reliably set true by the model for these
+    # compound questions (e.g. "how many positive reviews do I have and how
+    # can I improve" came back needs_aggregation=False), so leaving this to
+    # the model's own guess silently narrows the qualitative half back down
+    # to top_k=6.
+    is_aggregation = (
+        decomposed.needs_aggregation
+        or decomposed.intent == "improvement"
+        or (decomposed.intent == "count_query" and bool(decomposed.sub_queries))
+    )
     top_k = 20 if is_aggregation else 6
 
     date_from: float | None = None
