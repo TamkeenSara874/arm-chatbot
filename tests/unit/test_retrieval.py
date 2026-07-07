@@ -322,6 +322,32 @@ class TestBuildRetrievalParams:
         assert params.top_k == 20
         assert params.is_aggregation is True
 
+    def test_compound_count_query_forces_top_k_20_even_if_flag_false(self) -> None:
+        # A count_query with sub_queries is a compound question (e.g. "how many
+        # positive reviews do I have and how can I improve?") -- the count half
+        # is answered exactly via direct SQL regardless of top_k, but the
+        # sub_queries half needs the same wide evidence pool an improvement
+        # query gets. Confirmed live that needs_aggregation isn't reliably set
+        # true by the model for these compound questions.
+        decomposed = DecomposedQuery(
+            intent="count_query",
+            needs_aggregation=False,
+            sub_queries=["What are the most common complaints?"],
+        )
+        params = build_retrieval_params(decomposed)
+        assert params.top_k == 20
+        assert params.is_aggregation is True
+
+    def test_pure_count_query_without_sub_queries_uses_top_k_6(self) -> None:
+        # A pure count_query (no sub_queries) never reaches build_retrieval_params
+        # in practice -- it's answered by the direct-COUNT fast path before any
+        # retrieval happens. This just documents that the sub_queries check
+        # above doesn't accidentally widen top_k for every count_query.
+        decomposed = DecomposedQuery(intent="count_query", needs_aggregation=False, sub_queries=[])
+        params = build_retrieval_params(decomposed)
+        assert params.top_k == 6
+        assert params.is_aggregation is False
+
     def test_no_filters_leaves_none(self) -> None:
         decomposed = DecomposedQuery(intent="factual")
         params = build_retrieval_params(decomposed)

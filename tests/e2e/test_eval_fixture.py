@@ -202,6 +202,59 @@ async def test_count_query_fast_path(
 
 
 # ---------------------------------------------------------------------------
+# Compound count + qualitative question -- CQ-03 (regression: decomposition
+# must still classify this as count_query, not aggregation/sentiment_overview,
+# so the exact DB count is used rather than a self-counted estimate over
+# whatever evidence happened to be retrieved -- see query_decomposition.yaml's
+# "COMPOUND COUNT QUESTIONS" guidance)
+# ---------------------------------------------------------------------------
+
+
+async def test_compound_count_and_topics(
+    api_client: httpx.AsyncClient, jwt: str, session_id: str, judge: AsyncOpenAI
+) -> None:
+    case = _case("CQ-03")
+    message = case["turns"][0]["content"]
+    result = await send_query(api_client, jwt, session_id, SEEDED_RESTAURANT_ID, message)
+
+    # _format_count_answer() (src/api/routes/chat.py) always phrases an exact
+    # DB count as "You have N ... in total." -- a mechanical, cheap way to
+    # confirm the count_query fast path's precomputed_count actually reached
+    # the answer, without needing a live ground-truth SQL comparison here.
+    assert "in total" in result.answer.lower(), (
+        f'CQ-03: expected the answer to state an exact database total ("...in total"), '
+        f"got: {result.answer!r} -- decomposition likely misclassified this compound question "
+        f"away from count_query, so no exact count was computed"
+    )
+
+    await _assert_judged(judge, message, result, "CQ-03")
+
+
+# ---------------------------------------------------------------------------
+# Named-person question: staff mention vs. reviewer identity -- NP-01
+# (regression: a name mentioned WITHIN review text, not as a username, must
+# still be answered from that text -- see chat_response_simple/complex.yaml's
+# NAMED-PERSON QUESTIONS rule)
+# ---------------------------------------------------------------------------
+
+
+async def test_named_person_staff_mention(
+    api_client: httpx.AsyncClient, jwt: str, session_id: str, judge: AsyncOpenAI
+) -> None:
+    case = _case("NP-01")
+    message = case["turns"][0]["content"]
+    result = await send_query(api_client, jwt, session_id, SEEDED_RESTAURANT_ID, message)
+
+    assert "no reviewer" not in result.answer.lower(), (
+        f"NP-01: the named person appears within retrieved review text (a staff mention), not as "
+        f"a username -- the answer should discuss that mention, not declare no reviewer was found. "
+        f"Got: {result.answer!r}"
+    )
+
+    await _assert_judged(judge, message, result, "NP-01")
+
+
+# ---------------------------------------------------------------------------
 # Report -- RP-01 (separate endpoint, matches how the frontend's Report button
 # actually calls it -- typing "generate a report" into chat does not currently
 # route to this tool call; see note in the harness summary)
