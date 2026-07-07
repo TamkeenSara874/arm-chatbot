@@ -1,4 +1,5 @@
-"""Unit tests for src/api/routes/chat.py's _persist_instant_exchange.
+"""Unit tests for src/api/routes/chat.py's _persist_instant_exchange and the
+message_id threading in _yield_cached.
 
 Regression coverage for a real bug: the guardrail, conversation_recall, and
 count_query fast paths all emit their response via _yield_instant() without
@@ -7,15 +8,17 @@ Confirmed live: a count-query answer and a guardrail decline both vanished
 from chat history, and a later conversation_recall question had no awareness
 either turn had happened -- both build_recent_turns_context (Postgres) and
 build_session_context's cross-session search (Qdrant) only ever see
-persisted rows.
+persisted rows. The same gap existed for both cache-hit tiers (_yield_cached),
+fixed the same way.
 """
 
+import json
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.api.routes.chat import _persist_instant_exchange
+from src.api.routes.chat import _persist_instant_exchange, _yield_cached
 
 
 def _make_db() -> MagicMock:
@@ -104,3 +107,21 @@ class TestPersistInstantExchange:
                 embedder=embedder,
                 vector_store=vector_store,
             )
+
+
+class TestYieldCached:
+    @pytest.mark.asyncio
+    async def test_uses_the_passed_in_message_id(self) -> None:
+        """Regression test: previously generated its own random message_id
+        internally, decoupled from whatever id the caller persisted the turn
+        under -- the SSE payload's message_id must match the persisted row."""
+        message_id = uuid.uuid4()
+        session_id = uuid.uuid4()
+        data = {"answer": "You have 12 reviews.", "confidence": 1.0}
+
+        events = [event async for event in _yield_cached(data, session_id, message_id)]
+
+        assert len(events) == 1
+        payload = json.loads(events[0]["data"])
+        assert payload["message_id"] == str(message_id)
+        assert payload["session_id"] == str(session_id)
