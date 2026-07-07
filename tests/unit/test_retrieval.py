@@ -190,6 +190,28 @@ class TestHybridRetrieve:
         assert results == []
         assert not vector_store.hybrid_search.called
 
+    @pytest.mark.asyncio
+    async def test_observes_retrieval_latency_metric(self) -> None:
+        """Regression test: retrieval_latency was declared in metrics.py but
+        never actually observed anywhere -- a dead metric."""
+        from src.core.retrieval import hybrid_retrieve
+
+        vector_store = MagicMock()
+        vector_store.hybrid_search = AsyncMock(return_value=[_sr("c1", 0.9)])
+
+        with _sparse_patch(), patch("src.core.retrieval.retrieval_latency") as mock_hist:
+            await hybrid_retrieve(
+                query="food quality",
+                restaurant_id=1,
+                embedder=_mock_embedder(),
+                vector_store=vector_store,
+                collection="review_chunks",
+            )
+
+        mock_hist.observe.assert_called_once()
+        (observed_seconds,) = mock_hist.observe.call_args.args
+        assert observed_seconds >= 0
+
 
 class TestRetrievalTiming:
     @pytest.mark.asyncio

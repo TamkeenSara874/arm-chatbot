@@ -88,7 +88,7 @@ from src.services.llm.base import BaseLLMClient
 from src.services.prompt_service import get_prompt_loader
 from src.services.vector.base import BaseVectorStore
 from src.utils.background import fire_and_forget
-from src.utils.metrics import active_sessions_gauge
+from src.utils.metrics import active_sessions_gauge, count_query_total
 from src.utils.security import sanitize_input, validate_llm_output
 from src.utils.tracing import RequestTrace
 
@@ -753,6 +753,7 @@ async def _handle_count_query(
 
     msg_id = uuid.uuid4()
     trace.emit()
+    count_query_total.inc()
     return answer, msg_id
 
 

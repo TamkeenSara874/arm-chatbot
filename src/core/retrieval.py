@@ -12,6 +12,7 @@ import structlog
 from src.services.embedding.base import BaseEmbedder
 from src.services.embedding.sparse_embedder import compute_sparse_vector
 from src.services.vector.base import BaseVectorStore, SearchResult
+from src.utils.metrics import retrieval_latency
 
 if TYPE_CHECKING:
     from src.models.schemas import DecomposedQuery
@@ -155,6 +156,7 @@ async def hybrid_retrieve(
         logger.warning("hybrid_search_failed", error=str(exc))
         return []
     search_ms = (time.perf_counter() - t1) * 1000.0
+    retrieval_latency.observe(search_ms / 1000.0)
 
     if not results:
         logger.info(

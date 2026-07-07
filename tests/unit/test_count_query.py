@@ -8,15 +8,19 @@ trustworthy number, so this keyword-based override exists as a deterministic
 safety net independent of what the LLM classified.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.api.routes.chat import (
     _compute_count,
     _format_count_answer,
+    _handle_count_query,
     _resolve_sentiment_filter,
 )
+from src.models.schemas import ChatQueryRequest
+from src.utils.tracing import RequestTrace
 
 
 class TestResolveSentimentFilter:
@@ -78,3 +82,32 @@ class TestComputeCount:
 
         assert count == 42
         db.execute.assert_awaited_once()
+
+
+class TestHandleCountQuery:
+    @pytest.mark.asyncio
+    async def test_increments_count_query_total_metric(self) -> None:
+        """Regression test: count_query_total was declared in metrics.py but
+        never actually incremented anywhere -- a dead metric."""
+        db = MagicMock()
+        exec_result = MagicMock()
+        exec_result.scalar_one.return_value = 7
+        db.execute = AsyncMock(return_value=exec_result)
+        decomposed = MagicMock(date_filter=None, rating_filter=None, sentiment_filter=None)
+        body = ChatQueryRequest(
+            session_id=uuid.uuid4(), restaurant_id=1, message="how many reviews?"
+        )
+        trace = RequestTrace(session_id=str(body.session_id), restaurant_id=1)
+
+        with patch("src.api.routes.chat.count_query_total") as mock_counter:
+            answer, msg_id = await _handle_count_query(
+                db,
+                body,
+                restaurant_id=1,
+                decomposed=decomposed,
+                sanitized="how many reviews?",
+                trace=trace,
+            )
+            mock_counter.inc.assert_called_once()
+
+        assert "7" in answer
