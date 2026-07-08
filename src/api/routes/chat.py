@@ -374,6 +374,18 @@ async def chat_query(
     if decomposed.compare_date_filter is not None:
         precomputed_trend = await _compute_trend_comparison(db, restaurant_id, decomposed)
 
+    # Breakdown fast path — decomposition sets breakdown_dimension for a
+    # whole-dataset distribution/ranking question ("which source has the
+    # most reviews"). Computed via direct SQL GROUP BY, same rationale as
+    # count_query/trend above, and threaded into the complex generation
+    # prompt so the model states real totals instead of tallying whatever
+    # top_k evidence happened to be retrieved and presenting that as if it
+    # were the full restaurant's numbers.
+    precomputed_breakdown: str | None = None
+    if decomposed.breakdown_dimension is not None:
+        breakdown = await _compute_breakdown(db, restaurant_id, decomposed.breakdown_dimension)
+        precomputed_breakdown = _format_breakdown_answer(breakdown, decomposed.breakdown_dimension)
+
     # Semantic cache check. Uses the decomposed/rephrased query (context- and
     # pronoun-resolved, more canonical than the raw message) so a paraphrase
     # of an earlier question can still hit -- exact-text caching alone would
@@ -421,6 +433,7 @@ async def chat_query(
             precomputed_query_vector=cache_query_vector or None,
             precomputed_count=precomputed_count,
             precomputed_trend=precomputed_trend,
+            precomputed_breakdown=precomputed_breakdown,
             db=db,
             simple_client=simple_client,
             complex_client=complex_client,
@@ -765,6 +778,51 @@ async def _compute_trend_comparison(
     )
 
 
+_BREAKDOWN_COLUMNS = {
+    "source": ReviewChunkMeta.source,
+    "rating": ReviewChunkMeta.rating,
+    "sentiment": ReviewChunkMeta.sentiment_label,
+}
+
+
+async def _compute_breakdown(
+    db: AsyncSession,
+    restaurant_id: int,
+    dimension: str,
+) -> dict[str, int]:
+    """Exact GROUP BY count across the WHOLE restaurant's reviews by one
+    dimension (source/rating/sentiment) via direct SQL.
+
+    Mirrors _compute_count/_compute_trend_comparison's rationale: a "which
+    source has the most reviews" question needs the real total, not a tally
+    over whatever top_k evidence happened to be retrieved for this query.
+    `dimension` is only ever one of the three keys in _BREAKDOWN_COLUMNS
+    (constrained by DecomposedQuery's Literal type), so this never builds a
+    column reference from raw user/model text.
+    """
+    column = _BREAKDOWN_COLUMNS[dimension]
+    stmt = (
+        select(column, func.count())
+        .select_from(ReviewChunkMeta)
+        .where(ReviewChunkMeta.chunk_index == 0)
+        .where(ReviewChunkMeta.restaurant_id == restaurant_id)
+        .where(column.is_not(None))
+        .group_by(column)
+    )
+    result = await db.execute(stmt)
+    return {str(key): count for key, count in result.all()}
+
+
+def _format_breakdown_answer(breakdown: dict[str, int], dimension: str) -> str:
+    if not breakdown:
+        return f"No reviews have a recorded {dimension}."
+    parts = ", ".join(
+        f"{label}: {count}" for label, count in sorted(breakdown.items(), key=lambda x: -x[1])
+    )
+    total = sum(breakdown.values())
+    return f"Exact breakdown by {dimension} across all {total} reviews -- {parts}."
+
+
 def _format_count_answer(count: int, sentiment_filter: str | None) -> str:
     sentiment_part = f" {sentiment_filter.lower()}" if sentiment_filter else ""
     if count == 0:
@@ -809,6 +867,7 @@ async def _pipeline_stream(
     trace: RequestTrace,
     precomputed_count: str | None = None,
     precomputed_trend: str | None = None,
+    precomputed_breakdown: str | None = None,
     precomputed_query_vector: list[float] | None = None,
 ) -> AsyncGenerator[dict, None]:
     settings_ = get_settings()
@@ -862,7 +921,9 @@ async def _pipeline_stream(
         trace.evidence_count = len(ranked.evidence)
         trace.low_evidence = ranked.low_evidence
 
-        gate_answer = check_hallucination_gate(ranked, precomputed_count, precomputed_trend)
+        gate_answer = check_hallucination_gate(
+            ranked, precomputed_count, precomputed_trend, precomputed_breakdown
+        )
 
         if gate_answer is not None:
             # Hard hallucination gate: with zero retrieved evidence there is
@@ -929,7 +990,7 @@ async def _pipeline_stream(
                     unverified_note = correction_match.text
 
             selection = select_generation(
-                decomposed, precomputed_count, settings_, precomputed_trend
+                decomposed, precomputed_count, settings_, precomputed_trend, precomputed_breakdown
             )
             model_used = selection.model_used
             gen_client = complex_client if selection.is_complex else simple_client
@@ -950,6 +1011,7 @@ async def _pipeline_stream(
                 recency_spike=ranked.recency_spike,
                 exact_count=precomputed_count,
                 trend_comparison=precomputed_trend,
+                exact_breakdown=precomputed_breakdown,
             )
 
             # LLM streaming
@@ -986,7 +1048,9 @@ async def _pipeline_stream(
         # both periods' numbers come from direct SQL, not the retrieved
         # evidence sample, so they can legitimately exceed evidence_count.
         trace.groundedness_ok = check_count_groundedness(
-            answer_text, len(ranked.evidence), precomputed_count or precomputed_trend
+            answer_text,
+            len(ranked.evidence),
+            precomputed_count or precomputed_trend or precomputed_breakdown,
         )
 
         # Build structured response for the final event
