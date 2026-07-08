@@ -1,5 +1,6 @@
 import { FileBarChart, LogOut, MessageSquare, Plus } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { AnomalyAlertBanner } from './components/AnomalyAlertBanner';
 import { ChatWindow } from './components/ChatWindow';
 import { EvidencePanel } from './components/EvidencePanel';
 import { LoginPage } from './components/LoginPage';
@@ -111,6 +112,8 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      <AnomalyAlertBanner />
 
       <main className="relative flex flex-1 overflow-hidden">
         <div

@@ -106,3 +106,14 @@ export interface InsightsReport {
 export interface ReportResponse {
   report: InsightsReport;
 }
+
+export interface AnomalyAlertResponse {
+  detected: boolean;
+  message?: string | null;
+  recent_avg_rating?: number | null;
+  baseline_avg_rating?: number | null;
+  recent_negative_share?: number | null;
+  baseline_negative_share?: number | null;
+  recent_count: number;
+  baseline_count: number;
+}
