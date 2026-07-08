@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../services/api';
 import { useChatStore } from '../store/chatStore';
-import type { ChatMessage, CorrectionRequest, ReportRequest } from '../types/api';
+import type { AnomalyAlertResponse, ChatMessage, CorrectionRequest, ReportRequest } from '../types/api';
 
 export function useCreateSession() {
   const setSessionId = useChatStore((s) => s.setSessionId);
@@ -34,5 +34,19 @@ export function useCorrect() {
 export function useReport() {
   return useMutation({
     mutationFn: (body: ReportRequest) => api.generateReport(body),
+  });
+}
+
+// The backend caches its own result for 12h (src/core/anomaly.py), so
+// polling faster than that never gets fresher data -- 30 minutes just means
+// a tab left open across that 12h boundary picks up a newly-detected alert
+// reasonably promptly, without hammering the endpoint for no reason.
+export function useAnomalyAlert(restaurantId: number | null) {
+  return useQuery<AnomalyAlertResponse>({
+    queryKey: ['alerts', restaurantId],
+    queryFn: () => api.getAlerts(),
+    enabled: restaurantId != null,
+    refetchInterval: 30 * 60 * 1000,
+    staleTime: 5 * 60 * 1000,
   });
 }

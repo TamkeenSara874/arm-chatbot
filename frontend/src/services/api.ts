@@ -1,4 +1,5 @@
 import type {
+  AnomalyAlertResponse,
   ChatMessage,
   CorrectionRequest,
   IngestJobResponse,
@@ -136,4 +137,6 @@ export const api = {
 
   getIngestStatus: (jobId: string) =>
     request<IngestJobResponse>(`/api/v1/ingest/${jobId}/status`, {}, true),
+
+  getAlerts: () => request<AnomalyAlertResponse>('/api/v1/chat/alerts', {}, true),
 };
