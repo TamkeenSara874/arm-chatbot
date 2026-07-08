@@ -99,6 +99,14 @@ class DecomposedQuery(BaseModel):
     # instead of leaving the model to tally a breakdown from only the
     # retrieved evidence sample and state it as if it were the real total.
     breakdown_dimension: Literal["source", "rating", "sentiment"] | None = None
+    # Set when the question asks about reviews WITH written text/comments vs.
+    # rating-only reviews with none ("how many reviews have a rating but no
+    # written text", "star-rating-only reviews"). Maps directly to
+    # ReviewChunkMeta.has_content -- without this, _compute_count() had no way
+    # to filter by this condition and would silently fall back to an
+    # unfiltered total count whenever a count_query landed on this kind of
+    # question, presenting the wrong number as an exact fact.
+    content_filter: Literal["has_text", "no_text"] | None = None
 
 
 # Request / response schemas for the API
