@@ -12,7 +12,7 @@
     --store-accent:#334155; --store-fill:#F1F5F9;
     --llm-accent:  #BE123C; --llm-fill:  #FFF1F3;
     --dec-accent:  #CA8A04; --dec-fill:  #FEF9C3;
-    --seed-accent: #0369A1; --seed-fill: #F0F9FF;
+    --end-accent:  #15803D; --end-fill:  #F0FDF4;
     --ink: #0F172A;
     --sub: #475569;
   }
@@ -29,7 +29,7 @@
 
   header.page-head {
     max-width: 1300px;
-    margin: 0 auto 26px;
+    margin: 0 auto 22px;
   }
 
   header.page-head h1 {
@@ -44,6 +44,73 @@
     color: var(--sub);
     margin: 0;
     line-height: 1.55;
+    max-width: 900px;
+  }
+
+  header.page-head .revision {
+    font-size: 13px;
+    color: #94A3B8;
+    margin-top: 14px;
+    max-width: 1300px;
+    line-height: 1.6;
+  }
+
+  /* ---- Tabs ---- */
+  .tabbar {
+    max-width: 1300px;
+    margin: 26px auto 0;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    border-bottom: 2px solid #E2E8F0;
+    padding-bottom: 0;
+  }
+
+  .tabbar button {
+    appearance: none;
+    border: none;
+    background: transparent;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    color: #64748B;
+    padding: 12px 18px;
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: color 0.12s ease;
+  }
+
+  .tabbar button .n {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #E2E8F0;
+    color: #64748B;
+    font-size: 11.5px;
+    line-height: 20px;
+    text-align: center;
+    margin-right: 8px;
+  }
+
+  .tabbar button:hover { color: var(--ink); }
+
+  .tabbar button.active {
+    color: var(--pipe-accent);
+    border-bottom-color: var(--pipe-accent);
+  }
+  .tabbar button.active .n {
+    background: var(--pipe-accent);
+    color: #fff;
+  }
+
+  .tab-dek {
+    max-width: 1300px;
+    margin: 16px auto 0;
+    font-size: 14.5px;
+    color: var(--sub);
+    min-height: 20px;
   }
 
   /* ---- Legend ---- */
@@ -52,24 +119,24 @@
     flex-wrap: wrap;
     gap: 10px;
     max-width: 1300px;
-    margin: 22px auto 30px;
+    margin: 14px auto 22px;
   }
 
   .legend .chip {
     display: flex;
     align-items: center;
     gap: 9px;
-    padding: 8px 14px;
+    padding: 7px 13px;
     border-radius: 8px;
-    font-size: 14px;
+    font-size: 13.5px;
     font-weight: 600;
     background: #fff;
     border: 1px solid #E2E8F0;
   }
 
   .legend .swatch {
-    width: 13px;
-    height: 13px;
+    width: 12px;
+    height: 12px;
     border-radius: 3px;
     flex-shrink: 0;
   }
@@ -81,7 +148,7 @@
   .legend .store-label { color: var(--store-accent); }
   .legend .llm-label   { color: var(--llm-accent); }
   .legend .dec-label   { color: var(--dec-accent); }
-  .legend .seed-label  { color: var(--seed-accent); }
+  .legend .end-label   { color: var(--end-accent); }
 
   .legend .fe .swatch    { background: var(--fe-accent); }
   .legend .api .swatch   { background: var(--api-accent); }
@@ -90,39 +157,48 @@
   .legend .store .swatch { background: var(--store-accent); }
   .legend .llm .swatch   { background: var(--llm-accent); }
   .legend .dec .swatch   { background: var(--dec-accent); }
-  .legend .seed .swatch  { background: var(--seed-accent); }
+  .legend .end .swatch   { background: var(--end-accent); }
 
   /* ---- Diagram container ---- */
   .diagram-shell {
-    max-width: 100%;
+    max-width: 1300px;
     margin: 0 auto;
     background: #FFFFFF;
     border: 1px solid #E2E8F0;
     border-radius: 16px;
-    padding: 28px;
+    padding: 32px;
     overflow: auto;
+    min-height: 200px;
+  }
+
+  .diagram-panel { display: none; }
+  .diagram-panel.active { display: block; }
+
+  .diagram-panel .mermaid-target {
+    display: flex;
+    justify-content: center;
   }
 
   /* ---- Node label typography ---- */
   .nb {
     display: inline-block;
     text-align: left;
-    line-height: 1.5;
-    padding: 7px 11px;
+    line-height: 1.45;
+    padding: 6px 10px;
   }
 
   .t {
     font-weight: 700;
-    font-size: 18px;
+    font-size: 16px;
     display: block;
-    margin-bottom: 3px;
   }
 
   .d {
     font-weight: 500;
-    font-size: 14px;
+    font-size: 12.5px;
     display: block;
     color: var(--sub);
+    margin-top: 2px;
   }
 
   .fe-t   { color: var(--fe-accent); }
@@ -131,264 +207,122 @@
   .iw-t   { color: var(--iw-accent); }
   .store-t{ color: var(--store-accent); }
   .llm-t  { color: var(--llm-accent); }
-  .seed-t { color: var(--seed-accent); }
-  .dec-t  { color: var(--dec-accent); font-size: 17px; }
+  .end-t  { color: var(--end-accent); }
+  .dec-t  { color: var(--dec-accent); }
 
   .mermaid .cluster-label span,
   .mermaid .cluster-label div,
   .mermaid .cluster-label foreignObject div {
     font-weight: 800 !important;
-    font-size: 20px !important;
+    font-size: 18px !important;
   }
 
   .mermaid .edgeLabel span,
   .mermaid .edgeLabel div {
-    font-size: 13px !important;
+    font-size: 12.5px !important;
     font-weight: 600 !important;
     color: #475569 !important;
   }
 
   footer.note {
     max-width: 1300px;
-    margin: 26px auto 0;
+    margin: 22px auto 0;
     font-size: 13.5px;
     color: var(--sub);
     line-height: 1.65;
   }
+
+  footer.note strong { color: var(--ink); }
 </style>
 </head>
 <body>
 
 <header class="page-head">
   <h1>ARM Review RAG Chatbot — System Architecture</h1>
-  <p>Single connected view. Colors indicate subsystem membership; solid arrows are control flow, dashed arrows are data reads/writes and provider calls. This revision: replaces the open restaurant-picker with a real login (per-restaurant credential required to mint a JWT), adds a semantic (embedding-similarity) cache tier alongside the exact-text Redis tier, wires corrections into a consensus threshold (a single flag is an unverified aside, 3+ distinct flags supersede evidence), widens session memory to search across a restaurant's entire history (not just the current session, with an age cutoff), forces wider retrieval for broad "how can I improve" questions and adds a guardrail against inventing sales/revenue numbers reviews don't contain, replaces the reranker with an ONNX int8-quantized MiniLM at a tuned batch size, makes batch ingestion resumable (skips reviews a prior attempt already finished) and adds a push-based single-review live-ingestion endpoint, and surfaces the insights report's numbers as charts alongside the existing narrative. Latest round (live-testing driven): scopes session_context to reference-resolution only so it can't drag a self-contained question toward the wrong intent, adds a deterministic keyword safety net for count-query sentiment polarity, requires generation to cite real numbers instead of vague quantifiers, gives "what did we talk about?"-style questions their own conversation_recall path with zero review retrieval, and persists staleness-caveat suppression per restaurant (not per session) so it surfaces once total instead of on every new conversation. Newest round: consolidates rate limiting into one shared, Redis-backed, restaurant-keyed limiter that fails open on a Redis outage (previously three separate, partly in-memory-only instances silently multiplied the configured quota across workers); adds trend comparison (exact two-period stats via direct Postgres aggregation, not an LLM estimate) and a proactive rating/sentiment-drop alerts endpoint, both sharing the same exact-SQL aggregation helper; and makes Qdrant collection creation tolerant of concurrent creation by sibling workers on first boot against a brand-new Qdrant instance (a real crash this uncovered when deploying to a fresh Qdrant Cloud cluster — never surfaced locally, since the seed service always creates collections before the backend starts). Latest round (latency + live-testing driven): every fast path (guardrail, count_query, conversation_recall, both cache tiers) now persists chat history too, using a real strong-referenced background task instead of a bare create_task() a garbage collector could silently drop; correction lookup and session-context search now run concurrently off one shared query embedding instead of two sequential redundant ones; token-usage tracking now separates out OpenAI's cached-token count for future cost/latency visibility; a compound "exact count + qualitative" question (e.g. "total positive reviews and the major topics") now reliably keeps its count exact (correct intent classification) and its qualitative half backed by a wide evidence pool (not left to an unreliable model-set flag); a question about someone mentioned inside a review's text (e.g. a staff member) is no longer confused with a question about the review's own author; and a previously-defined-but-never-incremented pair of Prometheus metrics (retrieval latency, count-query volume) now actually reports real numbers, scraped by an optional local Prometheus instance.</p>
+  <p>
+    Four focused views instead of one dense diagram: start with the System Map for the big picture, then open
+    whichever flow you actually want to trace. Each one only shows what happens in that flow — for exact
+    file-level detail behind any step, see <code>docs/architecture.md</code>.
+  </p>
+  <p class="revision">
+    Restructured from a single 50+ node flowchart into these four focused views, plus trimmed node text
+    throughout, for readability. Content itself is unchanged from the prior revision — see
+    <code>docs/architecture.md</code> for the full, current change log.
+  </p>
 </header>
 
-<div class="legend">
-  <div class="chip seed"><span class="swatch"></span><span class="seed-label">Startup / Seed</span></div>
+<div class="tabbar" role="tablist">
+  <button class="active" data-tab="sysmap" role="tab"><span class="n">1</span>System Map</button>
+  <button data-tab="query" role="tab"><span class="n">2</span>Answering a Question</button>
+  <button data-tab="ingest" role="tab"><span class="n">3</span>Getting Reviews In</button>
+  <button data-tab="startup" role="tab"><span class="n">4</span>Starting Up</button>
+</div>
+
+<p class="tab-dek" id="tabDek">The whole system at a glance — five moving parts, wired together.</p>
+
+<div class="legend" id="legend">
   <div class="chip fe"><span class="swatch"></span><span class="fe-label">Frontend</span></div>
   <div class="chip api"><span class="swatch"></span><span class="api-label">API Layer</span></div>
   <div class="chip pipe"><span class="swatch"></span><span class="pipe-label">Query Pipeline</span></div>
   <div class="chip iw"><span class="swatch"></span><span class="iw-label">Ingest Worker</span></div>
-  <div class="chip store"><span class="swatch"></span><span class="store-label">Storage Layer</span></div>
-  <div class="chip llm"><span class="swatch"></span><span class="llm-label">LLM Provider Chain</span></div>
-  <div class="chip dec"><span class="swatch"></span><span class="dec-label">Decision / Branch Point</span></div>
+  <div class="chip store"><span class="swatch"></span><span class="store-label">Storage</span></div>
+  <div class="chip llm"><span class="swatch"></span><span class="llm-label">LLM Providers</span></div>
+  <div class="chip dec"><span class="swatch"></span><span class="dec-label">Decision Point</span></div>
+  <div class="chip end"><span class="swatch"></span><span class="end-label">Answer Sent / Done</span></div>
 </div>
 
 <div class="diagram-shell">
-  <pre id="diagram-src" style="display:none">
-flowchart TD
+  <div class="diagram-panel active" id="panel-sysmap">
+    <div class="mermaid-target" id="target-sysmap"></div>
+  </div>
+  <div class="diagram-panel" id="panel-query">
+    <div class="mermaid-target" id="target-query"></div>
+  </div>
+  <div class="diagram-panel" id="panel-ingest">
+    <div class="mermaid-target" id="target-ingest"></div>
+  </div>
+  <div class="diagram-panel" id="panel-startup">
+    <div class="mermaid-target" id="target-startup"></div>
+  </div>
+</div>
 
-  subgraph COMPOSE["DOCKER-COMPOSE STARTUP ORDER"]
-    direction TB
-    INFRA["<div class='nb'><span class='t seed-t'>Infrastructure Ready</span><span class='d'>postgres healthy</span><span class='d'>qdrant started · redis healthy</span></div>"]
+<footer class="note" id="footNote">
+  <strong>System Map:</strong> the frontend only ever talks to the API layer, which routes a chat question into
+  the Query Pipeline and a file/review upload into the Ingest Worker. Both of those read and write the same
+  three stores (Postgres, Qdrant, Redis) — that shared storage is how a review ingested a moment ago is
+  immediately answerable, and how a correction or cached answer is visible across every request. The Query
+  Pipeline is the only thing that talks to the paid LLM providers; the Ingest Worker calls a cheap model too
+  (for pulling out dish names), but never the expensive one.
+</footer>
 
-    subgraph SEED["SEED SERVICE — runs once per compose up"]
-      direction TB
-      SD1["<div class='nb'><span class='t seed-t'>Read Dataset</span><span class='d'>dataset/dataset.json</span><span class='d'>compute SHA-256 hash</span></div>"]
-      SD2{"<div class='nb'><span class='t dec-t'>Manifest Check</span><span class='d'>Postgres ingest_manifest</span><span class='d'>hash match AND</span><span class='d'>PIPELINE_VERSION match?</span></div>"}
-      SD3["<div class='nb'><span class='t seed-t'>EXIT 0 immediately</span><span class='d'>&lt; 1 second</span></div>"]
-      SD4["<div class='nb'><span class='t seed-t'>run_ingest_job</span><span class='d'>same pipeline as API ingest route</span></div>"]
-      SD5{"<div class='nb'><span class='t dec-t'>Job status?</span></div>"}
-      SD6["<div class='nb'><span class='t seed-t'>Write Manifest</span><span class='d'>hash + PIPELINE_VERSION</span><span class='d'>+ review_count · EXIT 0</span></div>"]
-      SD7{"<div class='nb'><span class='t dec-t'>Attempt &lt;= 3?</span></div>"}
-      SD8["<div class='nb'><span class='t seed-t'>Backoff Wait</span><span class='d'>60s x attempt · 60s / 120s</span><span class='d'>matches OpenAI rate-limit window</span></div>"]
-      SD9["<div class='nb'><span class='t seed-t'>EXIT 1</span><span class='d'>seed_all_attempts_failed</span><span class='d'>backend does NOT start</span></div>"]
+<script id="src-sysmap" type="text/plain">
+flowchart LR
+  FE["<div class='nb'><span class='t fe-t'>Frontend</span><span class='d'>React + Vite</span></div>"]
+  API["<div class='nb'><span class='t api-t'>API Layer</span><span class='d'>FastAPI</span></div>"]
+  PIPE["<div class='nb'><span class='t pipe-t'>Query Pipeline</span></div>"]
+  IW["<div class='nb'><span class='t iw-t'>Ingest Worker</span></div>"]
+  LLM["<div class='nb'><span class='t llm-t'>LLM Providers</span><span class='d'>Groq + OpenAI</span></div>"]
+  PG[("<div class='nb'><span class='t store-t'>PostgreSQL</span></div>")]
+  QD[("<div class='nb'><span class='t store-t'>Qdrant</span></div>")]
+  RD[("<div class='nb'><span class='t store-t'>Redis</span></div>")]
 
-      SD1 --> SD2
-      SD2 -->|"match"| SD3
-      SD2 -->|"mismatch or first run"| SD4
-      SD4 --> SD5
-      SD5 -->|"complete"| SD6
-      SD5 -->|"failed"| SD7
-      SD7 -->|"yes"| SD8
-      SD8 --> SD4
-      SD7 -->|"no"| SD9
-    end
+  FE -->|"chat, login, report"| API
+  API -->|"question"| PIPE
+  API -->|"upload / push"| IW
+  PIPE -->|"understand + answer"| LLM
+  IW -->|"extract dish names"| LLM
+  PIPE -.->|"read / write"| PG
+  PIPE -.->|"search"| QD
+  PIPE -.->|"cache, limits"| RD
+  IW -.->|"write"| PG
+  IW -.->|"write"| QD
 
-    BE["<div class='nb'><span class='t seed-t'>Backend Starts</span><span class='d'>uvicorn ready · API serving</span><span class='d'>reranker + sparse model warmup blocks</span><span class='d'>this step, not the first chat request</span><span class='d'>Qdrant collection creation tolerates a</span><span class='d'>409 from a sibling worker's concurrent</span><span class='d'>create on a brand-new Qdrant instance</span></div>"]
-    FEC["<div class='nb'><span class='t seed-t'>Frontend Container Starts</span><span class='d'>node:20-alpine · npm install · vite dev</span><span class='d'>NOT gated on seed/backend readiness —</span><span class='d'>only ordered after backend container start</span></div>"]
-
-    INFRA --> SD1
-    SD3 --> BE
-    SD6 -->|"service_completed_successfully"| BE
-    BE -.->|"depends_on (order only)"| FEC
-  end
-
-  subgraph FE["FRONTEND — React 18 · Vite · TypeScript · Tailwind"]
-    direction TB
-    LP["<div class='nb'><span class='t fe-t'>LoginPage</span><span class='d'>restaurant_id + restaurant_key form</span><span class='d'>full-screen gate, replaces old</span><span class='d'>free-pick-any-restaurant dropdown</span></div>"]
-    ZS[("<div class='nb'><span class='t fe-t'>Zustand Store</span><span class='d'>restaurantId · sessionId · JWT</span><span class='d'>messages</span></div>")]
-    CW["<div class='nb'><span class='t fe-t'>ChatWindow</span></div>"]
-    MB["<div class='nb'><span class='t fe-t'>MessageBubble</span><span class='d'>confidence badge · model badge</span><span class='d'>cached badge</span></div>"]
-    EP["<div class='nb'><span class='t fe-t'>EvidencePanel</span><span class='d'>star rating · sentiment badge</span><span class='d'>conflict warning</span></div>"]
-    FB["<div class='nb'><span class='t fe-t'>FeedbackButtons</span></div>"]
-    CM["<div class='nb'><span class='t fe-t'>CorrectionModal</span></div>"]
-    RV["<div class='nb'><span class='t fe-t'>ReportView</span><span class='d'>backend returns markdown (source of truth)</span><span class='d'>+ ReportCharts (Recharts) — rating histogram,</span><span class='d'>sentiment pie, source + top praised/complained bars</span><span class='d'>Download PDF — client-side html2canvas+jsPDF</span></div>"]
-    HOOK["<div class='nb'><span class='t fe-t'>useSSE Hook</span><span class='d'>@microsoft/fetch-event-source</span><span class='d'>AbortController</span><span class='d'>empty deps + getState</span></div>"]
-
-    LP --> ZS
-    ZS --> CW
-    CW --> MB
-    MB --> EP
-    MB --> FB
-    FB --> CM
-    CW --> RV
-    CW --> HOOK
-  end
-
-  subgraph API["API LAYER — FastAPI · one shared Redis-backed SlowAPI limiter · Bearer auth"]
-    direction TB
-    AT["<div class='nb'><span class='t api-t'>POST /auth/token</span><span class='d'>restaurant_id + restaurant_key</span><span class='d'>→ JWT scoped to that restaurant_id</span><span class='d'>same 401 for wrong key / unknown id</span><span class='d'>(prevents restaurant_id enumeration)</span></div>"]
-    A1["<div class='nb'><span class='t api-t'>POST /chat/query</span><span class='d'>SSE stream · 10 req/min</span><span class='d'>rate-limit key = restaurant_id from JWT</span><span class='d'>(shared limiter, not per-worker)</span></div>"]
-    A2["<div class='nb'><span class='t api-t'>POST /chat/sessions</span></div>"]
-    A3["<div class='nb'><span class='t api-t'>POST /chat/correct</span><span class='d'>20 req/min</span></div>"]
-    A4["<div class='nb'><span class='t api-t'>POST /chat/report</span></div>"]
-    A5["<div class='nb'><span class='t api-t'>POST /ingest</span><span class='d'>batch file upload · 5 req/min</span></div>"]
-    A8["<div class='nb'><span class='t api-t'>POST /ingest/review</span><span class='d'>single review, push-based · 60 req/min</span><span class='d'>external_review_id → deterministic review_id</span><span class='d'>repeat call = update, not duplicate</span></div>"]
-    A6["<div class='nb'><span class='t api-t'>GET /restaurants</span><span class='d'>ops/admin listing — not called</span><span class='d'>by the frontend login flow</span></div>"]
-    A7["<div class='nb'><span class='t api-t'>GET /health · /health/ready</span><span class='d'>/health/metrics — auth required</span></div>"]
-    A9["<div class='nb'><span class='t api-t'>GET /chat/alerts</span><span class='d'>proactive rating/sentiment-drop check</span><span class='d'>no request body — polled by the frontend</span></div>"]
-  end
-
-  subgraph PIPE["QUERY PIPELINE — src/core/"]
-    direction TB
-    RC{"<div class='nb'><span class='t dec-t'>Redis Cache</span><span class='d'>SHA256 key · TTL 24h</span></div>"}
-    GR["<div class='nb'><span class='t pipe-t'>Guardrail</span><span class='d'>out_of_scope → canned decline</span><span class='d'>ui_question → redirect to CareBot</span><span class='d'>report_howto → answered directly</span><span class='d'>(conversation_recall is NOT guardrailed —</span><span class='d'>CareBot has no visibility into this</span><span class='d'>chatbot's own conversation history)</span><span class='d'>every fast path below now persists to</span><span class='d'>chat_message via fire_and_forget() — a</span><span class='d'>real strong-ref background task, not a</span><span class='d'>bare create_task() a GC can silently drop</span></div>"]
-    DC["<div class='nb'><span class='t pipe-t'>Query Decomposition</span><span class='d'>Groq llama-3.3-70b</span><span class='d'>intent · aspect · sentiment</span><span class='d'>date_filter · rating_filter</span><span class='d'>sub_queries · complexity</span><span class='d'>session_context scoped to reference</span><span class='d'>resolution only — must not override</span><span class='d'>classification of a self-contained query</span><span class='d'>a compound count question ("total positive</span><span class='d'>reviews AND major topics") stays count_query,</span><span class='d'>non-countable half goes into sub_queries</span></div>"]
-    CR{"<div class='nb'><span class='t dec-t'>Complexity Router</span></div>"}
-    CVR["<div class='nb'><span class='t pipe-t'>conversation_recall fast path</span><span class='d'>session context only, zero retrieval</span><span class='d'>no evidence · no confidence score</span><span class='d'>no staleness caveat · gpt-4o-mini</span><span class='d'>must honestly distinguish this session</span><span class='d'>from age-labeled cross-session turns</span></div>"]
-    CP["<div class='nb'><span class='t pipe-t'>count_query fast path</span><span class='d'>PostgreSQL COUNT★</span><span class='d'>target &lt; 100ms · $0</span><span class='d'>sentiment_filter has a deterministic</span><span class='d'>keyword override — decomposition can</span><span class='d'>mis-extract polarity on an unambiguous query</span></div>"]
-    RP["<div class='nb'><span class='t pipe-t'>report fast path</span><span class='d'>OpenAI tool call</span><span class='d'>export_insights_report</span></div>"]
-    RPARAMS["<div class='nb'><span class='t pipe-t'>Retrieval Params</span><span class='d'>top_k = 20 if needs_aggregation</span><span class='d'>OR intent == improvement OR</span><span class='d'>(count_query AND sub_queries set),</span><span class='d'>else 6 — deterministic override, since</span><span class='d'>needs_aggregation alone isn't reliably</span><span class='d'>set true by the model for these cases</span></div>"]
-    HR["<div class='nb'><span class='t pipe-t'>Hybrid Retrieval</span><span class='d'>Dense ANN — Qdrant named vector 'dense'</span><span class='d'>Sparse — Qdrant native, fastembed BM25</span><span class='d'>server-side RRF via query_points()</span><span class='d'>Correction ANN — threshold 0.85</span><span class='d'>Qdrant breaker → both dense+sparse degrade together</span><span class='d'>(BM25 is no longer a separate in-process index)</span></div>"]
-    RR["<div class='nb'><span class='t pipe-t'>Cross-Encoder Reranking</span><span class='d'>cross-encoder/ms-marco-MiniLM-L6-v2</span><span class='d'>ONNX int8 dynamic quantization</span><span class='d'>batch_size=8 (fixes length-padding waste</span><span class='d'>that masked quantization's real win)</span><span class='d'>sigmoid normalised · fallback to RRF order</span><span class='d'>warmed up at startup, blocks before traffic</span></div>"]
-    RK["<div class='nb'><span class='t pipe-t'>Evidence Ranking</span><span class='d'>relevance = reranker sigmoid score</span><span class='d'>(RRF already ran server-side in Qdrant —</span><span class='d'>nothing downstream re-runs/overwrites it)</span><span class='d'>sentiment-mapped effective_rating</span><span class='d'>recency decay 1/(days+1)</span><span class='d'>entity counts · injection penalty 0.5</span><span class='d'>staleness caveat &gt; 365 days</span></div>"]
-    COR["<div class='nb'><span class='t pipe-t'>Correction Lookup</span><span class='d'>ANN over correction_embeddings</span><span class='d'>is_consensus (3+ distinct flags)</span><span class='d'>→ corrections: supersedes evidence</span><span class='d'>single flag → unverified_note:</span><span class='d'>brief mention only, evidence still wins</span><span class='d'>runs concurrently with Session Context —</span><span class='d'>same query, embedded once, not twice</span></div>"]
-    TC["<div class='nb'><span class='t pipe-t'>Trend Comparison</span><span class='d'>compare_date_filter set → two-period</span><span class='d'>exact Postgres aggregation (count ·</span><span class='d'>avg rating · sentiment), not an LLM</span><span class='d'>estimate — src/core/review_stats.py,</span><span class='d'>shared with the Alerts endpoint below</span></div>"]
-    AD["<div class='nb'><span class='t pipe-t'>Anomaly Detection</span><span class='d'>src/core/anomaly.py — reuses</span><span class='d'>review_stats.compute_period_stats</span><span class='d'>7-day window vs 7-day baseline</span><span class='d'>rating drop ≥0.5 OR neg. share +25pp</span><span class='d'>result cached in Redis, 12h TTL —</span><span class='d'>no new scheduler, recomputed lazily</span></div>"]
-    SC["<div class='nb'><span class='t pipe-t'>Session Context</span><span class='d'>last 5 verbatim — PostgreSQL</span><span class='d'>top-3 ANN — Qdrant session_memory,</span><span class='d'>filtered by restaurant_id (not just</span><span class='d'>session_id) — surfaces relevant turns</span><span class='d'>from OTHER past sessions too, labeled</span><span class='d'>with age · 90-day staleness cutoff</span><span class='d'>rolling summary at msg 50 · 6000-tok budget</span></div>"]
-    GN["<div class='nb'><span class='t pipe-t'>Response Generation</span><span class='d'>simple → gpt-4o-mini, max 400 tok</span><span class='d'>complex → gpt-4.1, max 800 tok</span><span class='d'>structured output via beta.parse</span><span class='d'>SSE token stream</span><span class='d'>real token usage incl. cached_tokens</span><span class='d'>(OpenAI prompt-cache visibility) → cost_usd</span><span class='d'>groundedness_ok count-overclaim check</span><span class='d'>3-way improvement grounding: strong evidence</span><span class='d'>→ specific fix; thin → real themes + labeled</span><span class='d'>general advice; zero → honest refusal</span><span class='d'>never invents sales/revenue numbers reviews</span><span class='d'>don't contain — states that plainly instead</span><span class='d'>named-person: reviewer's own words (check</span><span class='d'>username) vs. someone mentioned IN a review</span><span class='d'>(check evidence text) are answered differently</span></div>"]
-
-    RC -->|"MISS"| GR
-    GR -->|"pass-through"| DC
-    DC --> CR
-    DC -.->|"compare_date_filter set"| TC
-    CR -->|"conversation_recall"| CVR
-    CR -->|"count_query"| CP
-    CR -->|"report"| RP
-    CR -->|"simple / complex"| RPARAMS
-    RPARAMS --> HR
-    HR --> RR
-    RR --> RK
-    RK -->|"asyncio.gather — one shared"| COR
-    RK -->|"query embedding, not two"| SC
-    COR --> GN
-    SC --> GN
-    TC --> GN
-  end
-
-  subgraph IW["INGEST WORKER — asyncio.create_task, never blocks"]
-    direction TB
-    PV["<div class='nb'><span class='t iw-t'>PIPELINE_VERSION = 1.0.0</span><span class='d'>bump when: embedding model,</span><span class='d'>chunking strategy, or entity</span><span class='d'>extraction prompt changes</span></div>"]
-    PJ["<div class='nb'><span class='t iw-t'>Parse JSON</span><span class='d'>utf-8-sig BOM</span><span class='d'>list(data.values())[0]</span><span class='d'>SQL string outer key</span></div>"]
-    FC["<div class='nb'><span class='t iw-t'>Field Correction Defaults</span><span class='d'>createdAt → defensive parse</span><span class='d'>username → Anonymous</span><span class='d'>sentiment → Neutral · source → Unknown</span></div>"]
-    SKIP{"<div class='nb'><span class='t dec-t'>Already processed?</span><span class='d'>review_id + pipeline_version</span><span class='d'>already in review_chunk_meta?</span></div>"}
-    SRC["<div class='nb'><span class='t iw-t'>Sentiment-Rating Conflict</span><span class='d'>pre-computed sentiment vs rating</span><span class='d'>sentiment_rating_agree flag</span><span class='d'>zero cost — no LLM</span></div>"]
-    IS["<div class='nb'><span class='t iw-t'>Injection Scan</span><span class='d'>regex — 10 injection patterns</span><span class='d'>+ 13 system-leak patterns (output-side, separate list)</span><span class='d'>has_injection_attempt flag</span><span class='d'>never blocks storage</span><span class='d'>relevance penalty 0.5 at query time</span></div>"]
-    CK["<div class='nb'><span class='t iw-t'>Adaptive Chunking — NLTK</span><span class='d'>len ≤ 256 tok → single chunk</span><span class='d'>len &gt; 256 → sliding window, 32-tok overlap</span><span class='d'>sent_tokenize sentence boundaries</span></div>"]
-    EE["<div class='nb'><span class='t iw-t'>Entity Extraction</span><span class='d'>gpt-4o-mini per chunk</span><span class='d'>food_entities JSON array</span><span class='d'>~$0.075 per 500-review ingest</span></div>"]
-    BE2["<div class='nb'><span class='t iw-t'>Batch Embedding</span><span class='d'>text-embedding-3-large</span><span class='d'>batch_size = 100</span><span class='d'>dim verify 3072 on first call</span></div>"]
-    QU["<div class='nb'><span class='t iw-t'>Qdrant Upsert (per batch)</span><span class='d'>review_date_ts as Unix int</span><span class='d'>point_id = hash(restaurant+user+date+idx)</span></div>"]
-    PGU["<div class='nb'><span class='t iw-t'>Postgres Upsert (same batch)</span><span class='d'>review_chunk_meta, ON CONFLICT DO UPDATE</span><span class='d'>commits together with the Qdrant upsert</span><span class='d'>above — not deferred to end-of-file, so a</span><span class='d'>crash never leaves Postgres empty while</span><span class='d'>Qdrant has full data</span></div>"]
-    BI["<div class='nb'><span class='t iw-t'>Redis Cache Invalidate</span><span class='d'>invalidate_restaurant() on ingest</span><span class='d'>bursts stale cached chat answers</span></div>"]
-    SREV["<div class='nb'><span class='t iw-t'>Single-Review Live Path</span><span class='d'>POST /ingest/review → ingest_single_review()</span><span class='d'>review_id = hash(restaurant_id, external_review_id)</span><span class='d'>repeat call = update: reuses chunk_ids,</span><span class='d'>deletes stale leftover chunks (Qdrant + Postgres)</span><span class='d'>if the edit shrinks the chunk count</span></div>"]
-
-    PJ --> FC --> SKIP
-    SKIP -->|"yes — skip, no LLM/embed cost"| BI
-    SKIP -->|"no"| SRC
-    SRC --> IS --> CK --> EE --> BE2 --> QU --> PGU --> BI
-  end
-
-  subgraph STORE["STORAGE LAYER"]
-    direction TB
-    PG[("<div class='nb'><span class='t store-t'>PostgreSQL</span><span class='d'>chat_session · chat_message</span><span class='d'>chat_correction — audit log</span><span class='d'>review_chunk_meta — + pipeline_version</span><span class='d'>ingest_job — + skipped_already_processed</span><span class='d'>ingest_manifest — file_hash · pipeline_version</span><span class='d'>restaurant_credential — SHA-256 key_hash</span><span class='d'>per restaurant_id, required to mint a JWT</span></div>")]
-    QD[("<div class='nb'><span class='t store-t'>Qdrant</span><span class='d'>review_chunks — 3072-dim</span><span class='d'>correction_embeddings</span><span class='d'>session_memory — restaurant-wide, age-labeled</span><span class='d'>chat_cache — semantic cache tier, cosine ≥ 0.95</span></div>")]
-    RD[("<div class='nb'><span class='t store-t'>Redis</span><span class='d'>response cache — exact-text tier, TTL 24h</span><span class='d'>rate limit counters — one shared limiter,</span><span class='d'>fails open if Redis is briefly unreachable</span><span class='d'>anomaly-alert cache — 12h TTL</span></div>")]
-    PROM[("<div class='nb'><span class='t store-t'>Prometheus (optional)</span><span class='d'>docker compose --profile monitoring up</span><span class='d'>scrapes GET /health/metrics — retrieval_latency</span><span class='d'>and count_query_total now actually observed</span><span class='d'>(previously defined but never incremented)</span></div>")]
-  end
-
-  subgraph LLM["LLM PROVIDER CHAIN — circuit breakers + retry"]
-    direction TB
-    GQ["<div class='nb'><span class='t llm-t'>Groq</span><span class='d'>llama-3.3-70b-versatile</span><span class='d'>decomposition · guardrail · temp 0.0</span><span class='d'>rotates across multiple free-tier keys</span><span class='d'>on rate limit, per-key circuit breaker</span></div>"]
-    GM["<div class='nb'><span class='t llm-t'>gpt-4o-mini</span><span class='d'>simple queries · decomp fallback</span><span class='d'>session summary · entity extraction</span></div>"]
-    GC["<div class='nb'><span class='t llm-t'>gpt-4.1</span><span class='d'>complex queries · report summary</span><span class='d'>tested vs. gpt-4.1-mini: mini was</span><span class='d'>slower on this workload — kept gpt-4.1</span></div>"]
-    EM["<div class='nb'><span class='t llm-t'>text-embedding-3-large</span><span class='d'>3072 dims · batch_size 100</span></div>"]
-    RE["<div class='nb'><span class='t llm-t'>cross-encoder/ms-marco-MiniLM-L6-v2</span><span class='d'>HuggingFace — local, ONNX int8 quantized</span><span class='d'>batch_size=8 · swappable via RERANKER_MODEL</span></div>"]
-
-    GQ -->|"429 → rotate key, then fallback"| GM
-  end
-
-  %% Startup wiring
-  BE --> API
-  FEC --> FE
-  SD2 -.->|"read manifest"| PG
-  SD6 -.->|"write manifest"| PG
-  SD4 -.->|"calls same pipeline directly"| PJ
-
-  %% Frontend to API
-  LP -->|"POST · Bearer (shared API_KEY)"| AT
-  AT -.->|"verify restaurant_credential"| PG
-  HOOK -->|"POST SSE · Bearer JWT"| A1
-  CM -->|"POST · Bearer"| A3
-  RV -->|"POST · Bearer"| A4
-
-  %% API to Pipeline
-  A1 --> RC
-  RC -->|"HIT — return immediately"| A1
-  GN -->|"write on first call"| RC
-
-  %% Ingest flow entry
-  A5 --> PJ
-  A8 --> SREV
-  SREV -.-> QD
-  SREV -.-> PG
-  SREV -.-> RD
-
-  %% Alerts flow entry
-  A9 --> AD
-  AD -.-> PG
-  AD -.-> RD
-
-  %% Correction flow
-  A3 -.-> QD
-  COR -.-> QD
-
-  %% Monitoring (optional profile)
-  PROM -.->|"scrape"| A7
-
-  %% Storage reads / writes
-  CP -.-> PG
-  RP -.-> PG
-  RP -.-> QD
-  HR -.-> QD
-  SC -.-> QD
-  SC -.-> PG
-  GN -.-> PG
-  TC -.-> PG
-  RC -.-> RD
-  RC -.-> QD
-  BI -.-> QD
-  QU -.-> QD
-  PGU -.-> PG
-
-  %% LLM wiring
-  DC -->|"primary"| GQ
-  GN -->|"simple"| GM
-  GN -->|"complex"| GC
-  BE2 -.-> EM
-  EE -.-> GM
-  RR -.-> RE
+  class FE feNode;
+  class API apiNode;
+  class PIPE pipeNode;
+  class IW iwNode;
+  class LLM llmNode;
+  class PG,QD,RD storeNode;
 
   classDef feNode    fill:#EEF2FF,stroke:#4338CA,stroke-width:1.8px,color:#1E1B4B,rx:10,ry:10;
   classDef apiNode   fill:#F5F3FF,stroke:#7C3AED,stroke-width:1.8px,color:#2E1065,rx:10,ry:10;
@@ -396,73 +330,130 @@ flowchart TD
   classDef iwNode    fill:#FFFBEB,stroke:#B45309,stroke-width:1.8px,color:#451A03,rx:10,ry:10;
   classDef storeNode fill:#F1F5F9,stroke:#334155,stroke-width:1.8px,color:#0F172A,rx:10,ry:10;
   classDef llmNode   fill:#FFF1F3,stroke:#BE123C,stroke-width:1.8px,color:#4C0519,rx:10,ry:10;
+</script>
+
+<script id="src-query" type="text/plain">
+flowchart TD
+  START(["<div class='nb'><span class='t'>Question arrives</span></div>"])
+  LOGIN["<div class='nb'><span class='t api-t'>Verify login</span><span class='d'>JWT scoped to this restaurant</span></div>"]
+  CRISIS{"<div class='nb'><span class='t dec-t'>Crisis language?</span></div>"}
+  CRISIS_R["<div class='nb'><span class='t end-t'>Caring response</span><span class='d'>988 / findahelpline.com — no data touched</span></div>"]
+  CACHE{"<div class='nb'><span class='t dec-t'>Answered before?</span></div>"}
+  CACHE_R["<div class='nb'><span class='t end-t'>Return saved answer</span><span class='d'>$0 · instant</span></div>"]
+  DECOMP["<div class='nb'><span class='t pipe-t'>Understand the question</span><span class='d'>intent · filters · sub-questions</span></div>"]
+  GUARD{"<div class='nb'><span class='t dec-t'>Should we even<br/>try to answer this?</span></div>"}
+  GUARD_R["<div class='nb'><span class='t end-t'>Decline or redirect</span><span class='d'>$0 — off-topic, unsafe, or platform-help question</span></div>"]
+  FASTPATH{"<div class='nb'><span class='t dec-t'>Exact answer<br/>already available?</span></div>"}
+  COUNT_R["<div class='nb'><span class='t end-t'>Direct database count</span><span class='d'>$0 — no LLM writes this</span></div>"]
+  RECALL_R["<div class='nb'><span class='t end-t'>Answer from this chat</span><span class='d'>no review data touched</span></div>"]
+  REPORT_R["<div class='nb'><span class='t end-t'>Full report + charts</span></div>"]
+  RETRIEVE["<div class='nb'><span class='t pipe-t'>Search the reviews</span><span class='d'>meaning + exact-keyword, at once</span></div>"]
+  RERANK["<div class='nb'><span class='t pipe-t'>Take a closer look</span><span class='d'>re-scores the top results</span></div>"]
+  RANK["<div class='nb'><span class='t pipe-t'>Score &amp; flag</span><span class='d'>recency · rating-vs-sentiment · safety</span></div>"]
+  PARALLEL["<div class='nb'><span class='t pipe-t'>Corrections + memory</span><span class='d'>both checked at once</span></div>"]
+  GENERATE["<div class='nb'><span class='t llm-t'>Write the answer</span><span class='d'>fast model for simple, larger for complex</span></div>"]
+  STREAM(["<div class='nb'><span class='t end-t'>Stream to user</span><span class='d'>saved in the background after</span></div>"])
+
+  START --> LOGIN --> CRISIS
+  CRISIS -->|"yes"| CRISIS_R --> STREAM
+  CRISIS -->|"no"| CACHE
+  CACHE -->|"exact or paraphrased hit"| CACHE_R --> STREAM
+  CACHE -->|"miss"| DECOMP --> GUARD
+  GUARD -->|"blocked"| GUARD_R --> STREAM
+  GUARD -->|"pass"| FASTPATH
+  FASTPATH -->|"an exact count"| COUNT_R --> STREAM
+  FASTPATH -->|"about this chat"| RECALL_R --> STREAM
+  FASTPATH -->|"a full report"| REPORT_R --> STREAM
+  FASTPATH -->|"needs real evidence"| RETRIEVE --> RERANK --> RANK --> PARALLEL --> GENERATE --> STREAM
+
+  class START,STREAM endNode;
+  class LOGIN apiNode;
+  class CRISIS,CACHE,GUARD,FASTPATH decNode;
+  class CRISIS_R,CACHE_R,GUARD_R,COUNT_R,RECALL_R,REPORT_R endNode;
+  class DECOMP,RETRIEVE,RERANK,RANK,PARALLEL pipeNode;
+  class GENERATE llmNode;
+
+  classDef apiNode   fill:#F5F3FF,stroke:#7C3AED,stroke-width:1.8px,color:#2E1065,rx:10,ry:10;
+  classDef pipeNode  fill:#ECFDF5,stroke:#0F766E,stroke-width:1.8px,color:#022C22,rx:10,ry:10;
+  classDef llmNode   fill:#FFF1F3,stroke:#BE123C,stroke-width:1.8px,color:#4C0519,rx:10,ry:10;
   classDef decNode   fill:#FEF9C3,stroke:#CA8A04,stroke-width:2.2px,color:#422006;
-  classDef seedNode  fill:#F0F9FF,stroke:#0369A1,stroke-width:1.8px,color:#082F49,rx:10,ry:10;
-  classDef noteNode  fill:#FFFDF7,stroke:#B45309,stroke-width:1.6px,stroke-dasharray:6 4,color:#451A03,rx:10,ry:10;
+  classDef endNode   fill:#F0FDF4,stroke:#15803D,stroke-width:1.8px,color:#052E16,rx:10,ry:10;
+</script>
 
-  class LP,ZS,CW,MB,EP,FB,CM,RV,HOOK feNode;
-  class AT,A1,A2,A3,A4,A5,A8,A6,A7,A9 apiNode;
-  class GR,DC,CP,RP,CVR,RPARAMS,HR,RR,RK,COR,SC,GN,TC,AD pipeNode;
-  class PJ,FC,SRC,IS,CK,EE,BE2,QU,PGU,BI,SREV iwNode;
-  class PG,QD,RD,PROM storeNode;
-  class GQ,GM,GC,EM,RE llmNode;
-  class RC,CR,SD2,SD5,SD7,SKIP decNode;
-  class INFRA,SD1,SD3,SD4,SD6,SD8,SD9,BE,FEC seedNode;
-  class PV noteNode;
+<script id="src-ingest" type="text/plain">
+flowchart TD
+  START(["<div class='nb'><span class='t'>New file, or a single<br/>review pushed live</span></div>"])
+  MANIFEST{"<div class='nb'><span class='t dec-t'>This exact file<br/>already ingested?</span></div>"}
+  SKIP_FILE["<div class='nb'><span class='t end-t'>Exit immediately</span><span class='d'>&lt; 1 second</span></div>"]
+  PERREVIEW{"<div class='nb'><span class='t dec-t'>This specific review<br/>already processed?</span></div>"}
+  SKIP_REVIEW["<div class='nb'><span class='t iw-t'>Skip it</span><span class='d'>no LLM or embedding cost</span></div>"]
+  CHUNK["<div class='nb'><span class='t iw-t'>Chunk long reviews</span><span class='d'>short ones stay whole</span></div>"]
+  ENTITIES["<div class='nb'><span class='t llm-t'>Pull out dish names</span><span class='d'>cheap model, per chunk</span></div>"]
+  EMBED["<div class='nb'><span class='t iw-t'>Compute two vectors</span><span class='d'>meaning + exact keywords</span></div>"]
+  STORE_BOTH["<div class='nb'><span class='t store-t'>Store together</span><span class='d'>Qdrant + Postgres, same step</span></div>"]
+  INVALIDATE["<div class='nb'><span class='t iw-t'>Clear stale cached answers</span></div>"]
+  DONE(["<div class='nb'><span class='t end-t'>Ready to search</span></div>"])
 
-  style COMPOSE fill:#F7FBFF,stroke:#BAE6FD,stroke-width:1.5px
-  style SEED fill:#FDFEFF,stroke:#7DD3FC,stroke-width:1.5px
-  style FE fill:#FBFCFF,stroke:#C7D2FE,stroke-width:1.5px
-  style API fill:#FCFBFF,stroke:#DDD6FE,stroke-width:1.5px
-  style PIPE fill:#F7FEFC,stroke:#99F6E4,stroke-width:1.5px
-  style IW fill:#FFFDF7,stroke:#FDE68A,stroke-width:1.5px
-  style STORE fill:#F8FAFC,stroke:#CBD5E1,stroke-width:1.5px
-  style LLM fill:#FFF8F9,stroke:#FECDD3,stroke-width:1.5px
-  </pre>
-  <div id="diagram-target"></div>
-</div>
+  START --> MANIFEST
+  MANIFEST -->|"unchanged"| SKIP_FILE
+  MANIFEST -->|"new or changed"| PERREVIEW
+  PERREVIEW -->|"yes"| SKIP_REVIEW --> INVALIDATE --> DONE
+  PERREVIEW -->|"no"| CHUNK --> ENTITIES --> EMBED --> STORE_BOTH --> INVALIDATE
 
-<footer class="note">
-  Solid arrows show control flow; dashed arrows show data reads/writes or provider calls. docker-compose brings up infrastructure,
-  runs the seed service once, and only starts the backend on service_completed_successfully. The seed checks the ingest_manifest
-  table (hash + PIPELINE_VERSION) and exits in under a second on a match; on a mismatch or first run it calls run_ingest_job — the
-  same function behind POST /ingest — with up to three attempts and 60s x attempt backoff.
-  <br/><br/>
-  <strong>If seed exhausts all 3 attempts (SD9, EXIT 1):</strong> the backend container never starts (its
-  service_completed_successfully dependency is never satisfied). The frontend container, however, is NOT gated on the backend's
-  readiness — it starts independently and serves the React app normally. A user opening the app sees the LoginPage render fine,
-  but its POST /auth/token call fails with a clear "server unavailable" error rather than an infinite spinner or a cryptic
-  network error. This is a deliberate fail-closed design at the data layer (never serve queries against a partially/incorrectly
-  ingested dataset) paired with a fail-open UI shell (the frontend itself never crashes just because the backend isn't up yet).
-  <br/><br/>
-  <strong>Login is a two-key model:</strong> the shared API_KEY (shipped in the frontend bundle — Vite inlines VITE_* vars at
-  build time) only proves "this is a legitimate client app," not which restaurant. POST /auth/token additionally requires a
-  per-restaurant restaurant_key (verified against a SHA-256 hash in restaurant_credential) before it will mint a JWT scoped to
-  that restaurant_id — closing a real gap where the shared key alone used to be enough to mint a token for any restaurant.
-</footer>
+  class START,DONE endNode;
+  class MANIFEST,PERREVIEW decNode;
+  class SKIP_FILE endNode;
+  class SKIP_REVIEW,CHUNK,EMBED,INVALIDATE iwNode;
+  class ENTITIES llmNode;
+  class STORE_BOTH storeNode;
+
+  classDef iwNode    fill:#FFFBEB,stroke:#B45309,stroke-width:1.8px,color:#451A03,rx:10,ry:10;
+  classDef llmNode   fill:#FFF1F3,stroke:#BE123C,stroke-width:1.8px,color:#4C0519,rx:10,ry:10;
+  classDef storeNode fill:#F1F5F9,stroke:#334155,stroke-width:1.8px,color:#0F172A,rx:10,ry:10;
+  classDef decNode   fill:#FEF9C3,stroke:#CA8A04,stroke-width:2.2px,color:#422006;
+  classDef endNode   fill:#F0FDF4,stroke:#15803D,stroke-width:1.8px,color:#052E16,rx:10,ry:10;
+</script>
+
+<script id="src-startup" type="text/plain">
+flowchart TD
+  INFRA["<div class='nb'><span class='t store-t'>Postgres, Qdrant, Redis<br/>ready</span></div>"]
+  SEEDCHECK{"<div class='nb'><span class='t dec-t'>Dataset changed since<br/>the last run?</span></div>"}
+  SEEDSKIP["<div class='nb'><span class='t end-t'>Exit immediately</span></div>"]
+  SEEDRUN["<div class='nb'><span class='t iw-t'>Ingest the dataset</span><span class='d'>up to 3 attempts, backing off</span></div>"]
+  SEEDOK{"<div class='nb'><span class='t dec-t'>Succeeded?</span></div>"}
+  BACKEND["<div class='nb'><span class='t api-t'>Backend starts</span><span class='d'>API begins serving</span></div>"]
+  BACKENDBLOCK["<div class='nb'><span class='t end-t'>Backend never starts</span><span class='d'>refuses to serve against bad data</span></div>"]
+  FRONTEND["<div class='nb'><span class='t fe-t'>Frontend starts</span><span class='d'>independent of backend readiness</span></div>"]
+
+  INFRA --> SEEDCHECK
+  SEEDCHECK -->|"no"| SEEDSKIP --> BACKEND
+  SEEDCHECK -->|"yes"| SEEDRUN --> SEEDOK
+  SEEDOK -->|"yes"| BACKEND
+  SEEDOK -->|"no, after 3 tries"| BACKENDBLOCK
+  INFRA -.-> FRONTEND
+
+  class INFRA storeNode;
+  class SEEDCHECK,SEEDOK decNode;
+  class SEEDSKIP,BACKENDBLOCK endNode;
+  class SEEDRUN iwNode;
+  class BACKEND apiNode;
+  class FRONTEND feNode;
+
+  classDef storeNode fill:#F1F5F9,stroke:#334155,stroke-width:1.8px,color:#0F172A,rx:10,ry:10;
+  classDef iwNode    fill:#FFFBEB,stroke:#B45309,stroke-width:1.8px,color:#451A03,rx:10,ry:10;
+  classDef apiNode   fill:#F5F3FF,stroke:#7C3AED,stroke-width:1.8px,color:#2E1065,rx:10,ry:10;
+  classDef feNode    fill:#EEF2FF,stroke:#4338CA,stroke-width:1.8px,color:#1E1B4B,rx:10,ry:10;
+  classDef decNode   fill:#FEF9C3,stroke:#CA8A04,stroke-width:2.2px,color:#422006;
+  classDef endNode   fill:#F0FDF4,stroke:#15803D,stroke-width:1.8px,color:#052E16,rx:10,ry:10;
+</script>
 
 <script type="module">
   import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-
-  let layout = "dagre";
-  try {
-    const elkLayouts = (await import("https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0/dist/mermaid-layout-elk.esm.min.mjs")).default;
-    mermaid.registerLayoutLoaders(elkLayouts);
-    layout = "elk";
-  } catch (e) {
-    console.warn("ELK layout unavailable, falling back to dagre:", e);
-  }
 
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "loose",
     theme: "base",
-    layout: layout,
-    elk: {
-      mergeEdges: false,
-      nodePlacementStrategy: "NETWORK_SIMPLEX",
-      cycleBreakingStrategy: "GREEDY_MODEL_ORDER"
-    },
     themeVariables: {
       fontFamily: "Inter, Segoe UI, sans-serif",
       primaryColor: "#EEF2FF",
@@ -472,17 +463,46 @@ flowchart TD
     },
     flowchart: {
       htmlLabels: true,
-      useMaxWidth: false,
+      useMaxWidth: true,
       curve: "linear",
-      nodeSpacing: 40,
-      rankSpacing: 55,
-      padding: 10
+      nodeSpacing: 34,
+      rankSpacing: 46,
+      padding: 8
     }
   });
 
-  const src = document.getElementById("diagram-src").textContent;
-  const { svg } = await mermaid.render("archDiagram", src);
-  document.getElementById("diagram-target").innerHTML = svg;
+  const diagrams = ["sysmap", "query", "ingest", "startup"];
+  for (const id of diagrams) {
+    const src = document.getElementById(`src-${id}`).textContent;
+    const { svg } = await mermaid.render(`archDiagram-${id}`, src);
+    document.getElementById(`target-${id}`).innerHTML = svg;
+  }
+
+  const deks = {
+    sysmap: "The whole system at a glance — five moving parts, wired together.",
+    query: "Every question walks through here. Most exit early on purpose — only a genuinely evidence-dependent question reaches the bottom.",
+    ingest: "What happens the moment a review file (or a single pushed review) needs to become searchable.",
+    startup: "What docker-compose does, in order, before the app is reachable at all."
+  };
+  const footNotes = {
+    sysmap: "<strong>System Map:</strong> the frontend only ever talks to the API layer, which routes a chat question into the Query Pipeline and a file/review upload into the Ingest Worker. Both of those read and write the same three stores (Postgres, Qdrant, Redis) — that shared storage is how a review ingested a moment ago is immediately answerable, and how a correction or cached answer is visible across every request. The Query Pipeline is the only thing that talks to the paid LLM providers; the Ingest Worker calls a cheap model too (for pulling out dish names), but never the expensive one.",
+    query: "<strong>Answering a Question:</strong> the four green exits above (\"Answer Sent / Done\") are all deliberate — a cache hit, a guardrail decline, a fast-path exact answer, or the full generation path all end the same way: something streams back to the user and gets saved afterward, without making them wait on that save. Only questions needing real synthesis across many reviews reach the bottom half of this diagram at all.",
+    ingest: "<strong>Getting Reviews In:</strong> the same steps run whether it's a full file upload or a single review pushed the moment it's posted. Two separate skip-checks (the whole file, then each individual review) mean a retried or repeated ingestion never re-pays for work already done.",
+    startup: "<strong>Starting Up:</strong> the backend refuses to start at all if ingestion fails three times in a row — it will not serve answers against a partially or incorrectly loaded dataset. The frontend, however, starts independently either way, so a backend outage shows a clear login error instead of a blank page."
+  };
+
+  const buttons = document.querySelectorAll(".tabbar button");
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      buttons.forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      document.querySelectorAll(".diagram-panel").forEach((p) => p.classList.remove("active"));
+      const id = btn.dataset.tab;
+      document.getElementById(`panel-${id}`).classList.add("active");
+      document.getElementById("tabDek").textContent = deks[id];
+      document.getElementById("footNote").innerHTML = footNotes[id];
+    });
+  });
 </script>
 
 </body>
