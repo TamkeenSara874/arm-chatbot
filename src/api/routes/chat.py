@@ -362,7 +362,7 @@ async def chat_query(
             )
         sentiment_filter = _resolve_sentiment_filter(sanitized, decomposed.sentiment_filter)
         count = await _compute_count(db, restaurant_id, decomposed, sentiment_filter)
-        precomputed_count = _format_count_answer(count, sentiment_filter)
+        precomputed_count = _format_count_answer(count, sentiment_filter, decomposed.content_filter)
 
     # Trend-comparison fast path — decomposition sets compare_date_filter for
     # a time-period comparison question ("since last month", "compared to
@@ -716,6 +716,15 @@ async def _compute_count(
         if decomposed.rating_filter.max is not None:
             stmt = stmt.where(ReviewChunkMeta.rating <= decomposed.rating_filter.max)
 
+    # Without this, a count_query landing on a "how many reviews have a
+    # rating but no written text" style question had no way to express that
+    # condition -- it silently fell back to an unfiltered total and stated
+    # that as if it answered the actual question asked.
+    if decomposed.content_filter == "no_text":
+        stmt = stmt.where(ReviewChunkMeta.has_content.is_(False))
+    elif decomposed.content_filter == "has_text":
+        stmt = stmt.where(ReviewChunkMeta.has_content.is_(True))
+
     result = await db.execute(stmt)
     return result.scalar_one()
 
@@ -823,11 +832,18 @@ def _format_breakdown_answer(breakdown: dict[str, int], dimension: str) -> str:
     return f"Exact breakdown by {dimension} across all {total} reviews -- {parts}."
 
 
-def _format_count_answer(count: int, sentiment_filter: str | None) -> str:
+def _format_count_answer(
+    count: int, sentiment_filter: str | None, content_filter: str | None = None
+) -> str:
     sentiment_part = f" {sentiment_filter.lower()}" if sentiment_filter else ""
+    content_part = ""
+    if content_filter == "no_text":
+        content_part = " with a rating but no written text"
+    elif content_filter == "has_text":
+        content_part = " with written text"
     if count == 0:
-        return f"No{sentiment_part} reviews match that filter."
-    return f"You have {count}{sentiment_part} review{'s' if count != 1 else ''} in total."
+        return f"No{sentiment_part} reviews{content_part} match that filter."
+    return f"You have {count}{sentiment_part} review{'s' if count != 1 else ''}{content_part} in total."
 
 
 async def _handle_count_query(
@@ -843,7 +859,7 @@ async def _handle_count_query(
     count = await _compute_count(db, restaurant_id, decomposed, sentiment_filter)
     trace.generation_ms = (time.perf_counter() - t0) * 1000.0
 
-    answer = _format_count_answer(count, sentiment_filter)
+    answer = _format_count_answer(count, sentiment_filter, decomposed.content_filter)
 
     msg_id = uuid.uuid4()
     trace.emit()

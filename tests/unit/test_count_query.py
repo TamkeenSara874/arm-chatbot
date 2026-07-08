@@ -66,6 +66,22 @@ class TestFormatCountAnswer:
     def test_singular_review_wording(self) -> None:
         assert _format_count_answer(1, None) == "You have 1 review in total."
 
+    def test_no_text_content_filter(self) -> None:
+        result = _format_count_answer(500, None, "no_text")
+        assert result == "You have 500 reviews with a rating but no written text in total."
+
+    def test_has_text_content_filter(self) -> None:
+        result = _format_count_answer(2000, None, "has_text")
+        assert result == "You have 2000 reviews with written text in total."
+
+    def test_content_filter_combined_with_sentiment(self) -> None:
+        result = _format_count_answer(10, "Negative", "no_text")
+        assert result == "You have 10 negative reviews with a rating but no written text in total."
+
+    def test_zero_count_with_content_filter(self) -> None:
+        result = _format_count_answer(0, None, "no_text")
+        assert result == "No reviews with a rating but no written text match that filter."
+
 
 class TestComputeCount:
     @pytest.mark.asyncio
@@ -74,7 +90,7 @@ class TestComputeCount:
         exec_result = MagicMock()
         exec_result.scalar_one.return_value = 42
         db.execute = AsyncMock(return_value=exec_result)
-        decomposed = MagicMock(date_filter=None, rating_filter=None)
+        decomposed = MagicMock(date_filter=None, rating_filter=None, content_filter=None)
 
         count = await _compute_count(
             db, restaurant_id=1, decomposed=decomposed, sentiment_filter="Negative"
@@ -82,6 +98,54 @@ class TestComputeCount:
 
         assert count == 42
         db.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_text_filter_applies_has_content_false(self) -> None:
+        # Regression test: this is the exact live-discovered bug -- a
+        # count_query for "reviews with a rating but no written text" had no
+        # way to filter by this condition and silently returned the
+        # unfiltered total instead. Asserting the actual WHERE clause (not
+        # just that db.execute was called) so a future refactor can't
+        # silently drop the filter while still passing a shallower test.
+        db = MagicMock()
+        exec_result = MagicMock()
+        exec_result.scalar_one.return_value = 500
+        db.execute = AsyncMock(return_value=exec_result)
+        decomposed = MagicMock(date_filter=None, rating_filter=None, content_filter="no_text")
+
+        count = await _compute_count(
+            db, restaurant_id=1, decomposed=decomposed, sentiment_filter=None
+        )
+
+        assert count == 500
+        stmt = db.execute.call_args[0][0]
+        assert "has_content is false" in str(stmt).lower()
+
+    @pytest.mark.asyncio
+    async def test_has_text_filter_applies_has_content_true(self) -> None:
+        db = MagicMock()
+        exec_result = MagicMock()
+        exec_result.scalar_one.return_value = 2000
+        db.execute = AsyncMock(return_value=exec_result)
+        decomposed = MagicMock(date_filter=None, rating_filter=None, content_filter="has_text")
+
+        await _compute_count(db, restaurant_id=1, decomposed=decomposed, sentiment_filter=None)
+
+        stmt = db.execute.call_args[0][0]
+        assert "has_content is true" in str(stmt).lower()
+
+    @pytest.mark.asyncio
+    async def test_no_content_filter_does_not_filter_by_has_content(self) -> None:
+        db = MagicMock()
+        exec_result = MagicMock()
+        exec_result.scalar_one.return_value = 2753
+        db.execute = AsyncMock(return_value=exec_result)
+        decomposed = MagicMock(date_filter=None, rating_filter=None, content_filter=None)
+
+        await _compute_count(db, restaurant_id=1, decomposed=decomposed, sentiment_filter=None)
+
+        stmt = db.execute.call_args[0][0]
+        assert "has_content" not in str(stmt).lower()
 
 
 class TestHandleCountQuery:
