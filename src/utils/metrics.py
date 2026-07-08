@@ -33,7 +33,7 @@ active_sessions_gauge = Gauge(
 guardrail_triggered_total = Counter(
     "guardrail_triggered_total",
     "Number of queries blocked by the guardrail",
-    ["type"],  # "out_of_scope" | "ui_question"
+    ["type"],  # "out_of_scope" | "ui_question" | ... | "crisis_language"
 )
 
 injection_attempts_detected_total = Counter(
