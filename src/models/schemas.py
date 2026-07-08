@@ -93,6 +93,12 @@ class DecomposedQuery(BaseModel):
     # period, this holds the earlier one being compared against. None for
     # every non-comparison query.
     compare_date_filter: DateFilter | None = None
+    # Set when the question asks for an exact distribution/ranking across the
+    # WHOLE restaurant by one of these dimensions ("which source has the most
+    # reviews", "breakdown by rating") -- triggers a direct SQL GROUP BY
+    # instead of leaving the model to tally a breakdown from only the
+    # retrieved evidence sample and state it as if it were the real total.
+    breakdown_dimension: Literal["source", "rating", "sentiment"] | None = None
 
 
 # Request / response schemas for the API

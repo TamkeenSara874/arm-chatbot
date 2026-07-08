@@ -26,9 +26,11 @@ def _evidence_item(
     source: str | None = "Google",
     sentiment: str | None = "Positive",
     date_inferred: bool = False,
+    username: str | None = None,
 ) -> EvidenceItem:
     return EvidenceItem(
         snippet="great food",
+        username=username,
         rating=rating,
         source=source,
         sentiment=sentiment,
@@ -63,6 +65,14 @@ class TestFormatEvidence:
     def test_rating_none_shows_na(self) -> None:
         result = format_evidence([_evidence_item(rating=None)])
         assert "Rating: N/A" in result
+
+    def test_includes_reviewer_username_when_present(self) -> None:
+        result = format_evidence([_evidence_item(username="Jane Doe")])
+        assert "Reviewer: Jane Doe" in result
+
+    def test_omits_reviewer_field_when_username_absent(self) -> None:
+        result = format_evidence([_evidence_item(username=None)])
+        assert "Reviewer:" not in result
 
     def test_sentiment_conflict_flag_included(self) -> None:
         result = format_evidence([_evidence_item(sentiment_conflict=True)])
@@ -135,6 +145,14 @@ class TestCheckHallucinationGate:
         ranked = _ranking_result(evidence=[])
         assert check_hallucination_gate(ranked, None, None) == NO_EVIDENCE_ANSWER
 
+    def test_no_evidence_with_precomputed_breakdown_does_not_trigger(self) -> None:
+        ranked = _ranking_result(evidence=[])
+        assert check_hallucination_gate(ranked, None, None, "Google: 13, Yelp: 1") is None
+
+    def test_no_evidence_no_count_no_trend_no_breakdown_triggers_gate(self) -> None:
+        ranked = _ranking_result(evidence=[])
+        assert check_hallucination_gate(ranked, None, None, None) == NO_EVIDENCE_ANSWER
+
 
 class TestSelectGeneration:
     def _settings(self) -> MagicMock:
@@ -166,6 +184,15 @@ class TestSelectGeneration:
     def test_precomputed_trend_forces_complex_even_if_simple(self) -> None:
         decomposed = DecomposedQuery(intent="comparison", complexity="simple")
         selection = select_generation(decomposed, None, self._settings(), "10 reviews | 5 reviews")
+        assert selection.is_complex is True
+        assert selection.model_used == "gpt-4.1"
+        assert selection.prompt_name == "chat_response_complex"
+
+    def test_precomputed_breakdown_forces_complex_even_if_simple(self) -> None:
+        decomposed = DecomposedQuery(intent="aggregation", complexity="simple")
+        selection = select_generation(
+            decomposed, None, self._settings(), None, "Google: 13, Yelp: 1"
+        )
         assert selection.is_complex is True
         assert selection.model_used == "gpt-4.1"
         assert selection.prompt_name == "chat_response_complex"
@@ -257,6 +284,37 @@ class TestBuildGenerationPrompt:
         )
         _, kwargs = loader.format.call_args
         assert kwargs["trend_comparison"] == "10 reviews | 5 reviews"
+
+    def test_complex_prompt_defaults_exact_breakdown_to_none_string(self) -> None:
+        loader = MagicMock()
+        loader.format.return_value = ("system", "user")
+        build_generation_prompt(
+            loader,
+            "chat_response_complex",
+            True,
+            query="q",
+            session_context="ctx",
+            corrections="None",
+            evidence="ev",
+        )
+        _, kwargs = loader.format.call_args
+        assert kwargs["exact_breakdown"] == "None"
+
+    def test_complex_prompt_passes_exact_breakdown_through(self) -> None:
+        loader = MagicMock()
+        loader.format.return_value = ("system", "user")
+        build_generation_prompt(
+            loader,
+            "chat_response_complex",
+            True,
+            query="q",
+            session_context="ctx",
+            corrections="None",
+            evidence="ev",
+            exact_breakdown="Google: 13, Yelp: 1",
+        )
+        _, kwargs = loader.format.call_args
+        assert kwargs["exact_breakdown"] == "Google: 13, Yelp: 1"
 
     def test_unverified_note_defaults_to_none_string(self) -> None:
         loader = MagicMock()

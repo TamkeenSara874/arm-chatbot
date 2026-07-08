@@ -119,6 +119,18 @@ export function EvidencePanel() {
   const evidence: EvidenceItem[] = selected?.response?.response.evidence ?? [];
   const percentages = matchPercentages(evidence);
 
+  // The backend orders evidence by a composite score (relevance + recency +
+  // rating) -- generation reasons over that order for good reason, since a
+  // fresher or better-rated review can be more useful evidence than a
+  // slightly-higher-relevance old one. But this panel's badge shows relevance
+  // alone, so the two can disagree (a 47% card sitting above a 100% one) --
+  // confusing for a human scanning cards top to bottom expecting the number
+  // to match the order. Re-sort purely for display; the array powering
+  // generation elsewhere is untouched.
+  const sorted = evidence
+    .map((item, originalIndex) => ({ item, percent: percentages[originalIndex] }))
+    .sort((a, b) => b.percent - a.percent);
+
   return (
     <aside className="animate-slide-in fixed right-0 top-[64px] bottom-0 z-30 flex w-80 flex-col border-l border-gray-100 bg-gray-50">
       <div className="flex items-center justify-between border-b border-gray-100 bg-white px-4 py-3">
@@ -140,8 +152,8 @@ export function EvidencePanel() {
         {evidence.length === 0 ? (
           <p className="py-6 text-center text-sm text-gray-400">No evidence for this response.</p>
         ) : (
-          evidence.map((item, i) => (
-            <EvidenceCard key={i} item={item} index={i} matchPercent={percentages[i]} />
+          sorted.map(({ item, percent }, i) => (
+            <EvidenceCard key={i} item={item} index={i} matchPercent={percent} />
           ))
         )}
       </div>

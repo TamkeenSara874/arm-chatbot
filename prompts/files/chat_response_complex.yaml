@@ -10,17 +10,19 @@ chat_response_complex:
     3. RATING-TEXT CONFLICT: If a review has `sentiment_conflict: true`, the star rating disagrees with the text.
        In this case, trust the text sentiment (already computed) over the star rating.
        State the conflict explicitly: "Note: this reviewer gave 5 stars but expressed concerns about X."
-    4. AGGREGATION AND QUANTIFICATION: For counting/ranking questions, base counts strictly on the evidence
-       chunks provided. State exact counts (e.g., "7 of the 12 retrieved reviews mention slow service").
-       If the count may be incomplete due to retrieval limits, say: "Based on a sample of reviews..."
-       This also applies more broadly, any time you describe how common a specific complaint or praised
-       item is: entity_counts gives the real mention tally for specific dishes/items across the retrieved
-       evidence (e.g. {"tacos": 3, "pancakes": 2}) -- when discussing an item that appears there, cite
-       the actual number (e.g. "3 of the 20 retrieved reviews mention the tacos tasting bland") instead of
-       a vague quantifier like "some," "several," or "many." For themes that aren't a single named entity
-       in entity_counts (e.g. "slow service" spanning several different phrasings), count how many of the
-       numbered evidence entries actually support the claim and state that count. Never invent a number
-       that isn't backed by entity_counts, exact_count, or a real count of the evidence shown.
+    4. AGGREGATION AND QUANTIFICATION -- CRITICAL, do not skip this: entity_counts and source_breakdown
+       are tallies over ONLY the reviews retrieved for this specific question (e.g. a top-20 sample) --
+       NEVER the restaurant's full review history. Any count, ranking, or breakdown you compute yourself
+       from entity_counts, source_breakdown, or the evidence shown MUST be phrased as scoped to what was
+       retrieved -- "7 of the 12 retrieved reviews mention slow service", "of the reviews retrieved,
+       Google contributes the most at 13" -- never drop the "of the reviews retrieved" qualifier and
+       state a self-counted number as if it were the restaurant's true total (e.g. never say "Google is
+       the source that contributes the most reviews, with a total of 13" when 13 is just this sample's
+       tally -- that reads as an absolute fact and is wrong). The ONLY numbers you may state as true,
+       unqualified totals are ones explicitly computed from the database and handed to you verbatim:
+       exact_count, trend_comparison, or exact_breakdown (rules 13/13b/13c below) -- everything else is a
+       sample and must say so. Never invent a number that isn't backed by entity_counts, exact_count,
+       exact_breakdown, or a real count of the evidence shown.
     5. IMPROVEMENT SUGGESTIONS: Ground every suggestion in what the evidence actually shows, at whichever
        of these three levels applies -- do not collapse straight to a vague refusal just because the
        evidence is thin:
@@ -69,6 +71,13 @@ chat_response_complex:
         state these numbers verbatim (both periods) rather than estimating or recomputing them from
         the evidence chunks shown. Use the retrieved evidence only for qualitative color (what changed,
         example complaints/praise) alongside the exact numbers, not to recompute the numbers themselves.
+    13c. EXACT BREAKDOWN: If exact_breakdown is not "None", it is a complete distribution (by source,
+        rating, or sentiment) computed directly from the database across ALL of the restaurant's
+        reviews -- state these numbers verbatim as the real total breakdown. This is different from
+        source_breakdown (rule 4), which only tallies the retrieved sample -- when exact_breakdown is
+        present, use it for the actual counts/ranking the question asked for, and use the retrieved
+        evidence only for qualitative color (example reviews from the leading/trailing category), not
+        to recompute or contradict the exact numbers.
     14. NAMED-PERSON QUESTIONS: if the question (or a sub-question) refers to a specific named person,
         first work out which of two things is being asked, since they need different checks:
         (a) Asking for THAT PERSON'S OWN OPINION as a reviewer (e.g. "what did Alice think about the
@@ -128,6 +137,7 @@ chat_response_complex:
     Recency spike detected (>40% of evidence from last 7 days): {recency_spike}
     Exact count (from database, state verbatim if not "None"): {exact_count}
     Trend comparison, two periods (from database, state verbatim if not "None"): {trend_comparison}
+    Exact breakdown across ALL reviews (from database, state verbatim if not "None"): {exact_breakdown}
     Evidence (ranked by relevance, with conflict flags):
     {evidence}
     Write the answer as plain text, addressing every sub-question above in one flowing response
@@ -153,6 +163,8 @@ chat_response_complex:
       - name: exact_count
         default: "None"
       - name: trend_comparison
+        default: "None"
+      - name: exact_breakdown
         default: "None"
       - name: evidence
         default: ""
