@@ -40,6 +40,7 @@ from src.api.rate_limit import limiter
 from src.config import get_settings
 from src.core.anomaly import get_anomaly_status
 from src.core.correction import find_correction, store_correction
+from src.core.crisis_guardrail import CRISIS_RESPONSE, detect_crisis_language
 from src.core.decomposition import decompose_query
 from src.core.generation import (
     build_generation_prompt,
@@ -169,6 +170,38 @@ async def chat_query(
     )
 
     sanitized = sanitize_input(body.message)
+
+    # Crisis check -- ahead of the cache, decomposition, and every other
+    # guardrail. Deterministic and code-only on purpose: a distress signal
+    # can be buried inside an otherwise ordinary-looking business question
+    # (confirmed live: "I want to die, the reviews are so bad" still
+    # decomposed as a normal count_query and got a data-only answer with no
+    # acknowledgment at all) -- this must never depend on decomposition, a
+    # cache hit, or the generation prompt's general tone rule noticing it.
+    if detect_crisis_language(sanitized):
+        trace.emit()
+        crisis_msg_id = uuid.uuid4()
+        fire_and_forget(
+            _persist_instant_exchange(
+                session_id=body.session_id,
+                message_id=crisis_msg_id,
+                sanitized=sanitized,
+                answer=CRISIS_RESPONSE,
+                model_used="crisis_response",
+                restaurant_id=restaurant_id,
+                embedder=embedder,
+                vector_store=vector_store,
+            ),
+            name=f"persist-crisis-{crisis_msg_id}",
+        )
+        return EventSourceResponse(
+            _yield_instant(
+                ChatResponseSchema(answer=CRISIS_RESPONSE, evidence=[], confidence=1.0),
+                body.session_id,
+                crisis_msg_id,
+                model_used="crisis_response",
+            )
+        )
 
     # Cache check before any LLM work
     cached_data = await cache.get(restaurant_id, sanitized)
