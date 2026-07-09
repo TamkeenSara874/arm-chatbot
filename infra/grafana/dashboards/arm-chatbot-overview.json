@@ -1,0 +1,232 @@
+{
+  "id": null,
+  "uid": "arm-chatbot-overview",
+  "title": "ARM Review Chatbot — Overview",
+  "description": "Auto-provisioned. Every panel reads a metric already emitted by the backend (src/utils/metrics.py) -- nothing here needs manual setup, it fills in as real requests arrive.",
+  "tags": ["arm-chatbot"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active Sessions (24h)",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "refId": "A", "expr": "active_sessions_gauge" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Cache Hit Rate",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(cache_hit_total{result=\"hit\"}[5m])) / clamp_min(sum(rate(cache_hit_total[5m])), 1e-9)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "color": { "mode": "thresholds" } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Count-Query Fast Path (req/s)",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(count_query_total[5m]))" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Guardrail Blocks (req/s)",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(guardrail_triggered_total[5m]))" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "LLM Requests by Provider / Model",
+      "gridPos": { "x": 0, "y": 4, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(llm_request_total[5m])) by (provider, model, intent)",
+          "legendFormat": "{{provider}} / {{model}} / {{intent}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Pipeline Stage Latency (p50), by stage",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum(rate(pipeline_stage_latency_seconds_bucket[5m])) by (le, stage))",
+          "legendFormat": "{{stage}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Request Cost, p50 / p90 (USD)",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum(rate(request_cost_usd_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.9, sum(rate(request_cost_usd_bucket[5m])) by (le))",
+          "legendFormat": "p90"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Retrieval + Rerank Latency, p50 / p90",
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum(rate(retrieval_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "retrieval p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.9, sum(rate(retrieval_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "retrieval p90"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.5, sum(rate(rerank_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "rerank p50"
+        },
+        {
+          "refId": "D",
+          "expr": "histogram_quantile(0.9, sum(rate(rerank_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "rerank p90"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "LLM Request Latency, p50 / p90 by Provider",
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum(rate(llm_request_latency_seconds_bucket[5m])) by (le, provider))",
+          "legendFormat": "{{provider}} p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.9, sum(rate(llm_request_latency_seconds_bucket[5m])) by (le, provider))",
+          "legendFormat": "{{provider}} p90"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Guardrail Triggers by Type",
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(guardrail_triggered_total[5m])) by (type)",
+          "legendFormat": "{{type}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Reviews Ingested by Outcome",
+      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(ingest_reviews_total[5m])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Output Validation Failures (req/s)",
+      "gridPos": { "x": 0, "y": 36, "w": 8, "h": 6 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(output_validation_failed_total[5m]))" }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.01 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Injection Attempts Detected (req/s)",
+      "gridPos": { "x": 8, "y": 36, "w": 8, "h": 6 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(injection_attempts_detected_total[5m]))" }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.01 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Reports Generated (req/s)",
+      "gridPos": { "x": 16, "y": 36, "w": 8, "h": 6 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(report_generated_total[5m]))" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    }
+  ]
+}
