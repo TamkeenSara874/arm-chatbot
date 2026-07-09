@@ -1,0 +1,15 @@
+# Tells Grafana to auto-load every dashboard JSON file from the mounted
+# folder below on startup -- the dashboard exists before any request has
+# been made and starts filling in live as real traffic hits the backend.
+apiVersion: 1
+
+providers:
+  - name: arm-chatbot
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

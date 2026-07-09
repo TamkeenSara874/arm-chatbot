@@ -150,9 +150,12 @@ services:
 
   # Optional local observability stack -- does not start on a plain
   # `docker compose up`. Bring it up explicitly with:
-  #   docker compose --profile monitoring up -d prometheus
-  # then browse http://localhost:9090. See infra/prometheus/prometheus.yml
-  # for the scrape config (targets GET /health/metrics on the backend).
+  #   docker compose --profile monitoring up -d prometheus grafana
+  # then browse http://localhost:9090 (Prometheus) or http://localhost:3001
+  # (Grafana -- dashboard auto-loads, nothing to click through). See
+  # infra/prometheus/prometheus.yml for the scrape config (targets
+  # GET /health/metrics on the backend) and infra/grafana/README.md for how
+  # the dashboard/datasource provisioning works.
   prometheus:
     image: prom/prometheus:v2.53.0
     profiles: ["monitoring"]
@@ -163,6 +166,34 @@ services:
       - "9090:9090"
     depends_on:
       - backend
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: ["monitoring"]
+    environment:
+      # Local dev only -- change-me pattern matches every other placeholder
+      # credential in this repo (API_KEY, JWT_SECRET, etc.). Real deployments
+      # must override both via env vars, never commit real values here.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-local-dev-password}
+      # Provisioned datasource/dashboard below are the source of truth --
+      # disable Grafana's own onboarding/anonymous-signup prompts so the
+      # dashboard is the first and only thing an operator sees.
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      # Host port 3001, not the Grafana default 3000 -- this machine
+      # routinely runs other Docker projects with their own Grafana bound to
+      # 3000 (confirmed live: a completely unrelated project's container
+      # already held that port), so hardcoding 3000 here would randomly fail
+      # to start depending on what else happens to be running.
+      - "3001:3000"
+    depends_on:
+      - prometheus
 
   frontend:
     image: node:20-alpine
@@ -196,3 +227,4 @@ volumes:
   fastembed-cache:
   frontend-node-modules:
   prometheus-data:
+  grafana-data:
