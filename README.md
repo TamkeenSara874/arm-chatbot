@@ -308,6 +308,15 @@ Prometheus metrics exposed at `/api/v1/health/metrics` (Bearer auth required):
 - `active_sessions_total` — gauge
 - `guardrail_triggered_total` — counter by type
 
+**Optional local dashboard stack (Prometheus + Grafana):** not started by a plain `docker compose up`. Bring it up explicitly with:
+
+```bash
+docker compose --profile monitoring up -d prometheus grafana
+```
+
+- Prometheus: [http://localhost:9090](http://localhost:9090)
+- Grafana: [http://localhost:3001](http://localhost:3001) (not the default 3000 — avoids clashing with other local Grafana instances) — dashboard and datasource are auto-provisioned, nothing to configure manually; log in with `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` (see `.env.example`, defaults to `admin` / `change-me-local-dev-password`)
+
 Errors are reported to Sentry when `SENTRY_DSN` is set.
 
 **Verifying prompt/session-context correctness:** set `LOG_LEVEL=DEBUG` to see `decomposition_prompt` and `generation_prompt` structured log events containing the exact system/user prompt text sent to each LLM call, session context included -- useful for confirming what a model actually saw versus what `request_traces.jsonl`'s classified `intent`/`complexity` fields alone can tell you.

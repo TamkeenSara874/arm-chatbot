@@ -77,6 +77,7 @@ def check_hallucination_gate(
     precomputed_count: str | None,
     precomputed_trend: str | None = None,
     precomputed_breakdown: str | None = None,
+    precomputed_overall_stats: str | None = None,
 ) -> str | None:
     """Return the canned no-evidence answer if the hard hallucination gate
     applies, or None to signal the caller should proceed to generation.
@@ -84,15 +85,16 @@ def check_hallucination_gate(
     With zero retrieved evidence there is nothing grounded to answer from --
     skip the generation LLM call entirely rather than trust a soft "never
     fabricate" prompt instruction under real traffic. A precomputed count,
-    trend comparison, or breakdown is itself grounded (direct SQL, not
-    retrieved evidence), so any one alone is enough to proceed even with zero
-    evidence.
+    trend comparison, breakdown, or overall-stats figure is itself grounded
+    (direct SQL, not retrieved evidence), so any one alone is enough to
+    proceed even with zero evidence.
     """
     if (
         not ranked.evidence
         and not precomputed_count
         and not precomputed_trend
         and not precomputed_breakdown
+        and not precomputed_overall_stats
     ):
         return NO_EVIDENCE_ANSWER
     return None
@@ -111,19 +113,22 @@ def select_generation(
     settings: Settings,
     precomputed_trend: str | None = None,
     precomputed_breakdown: str | None = None,
+    precomputed_overall_stats: str | None = None,
 ) -> GenerationSelection:
     """Pick the generation model/prompt template for this query.
 
     A compound query (generative half + a countable half, a trend comparison,
-    or a whole-dataset breakdown) always routes through the complex
-    prompt/template so the DB-exact numbers can be stated verbatim instead of
-    the model trying to (mis)count or estimate them from evidence itself.
+    a whole-dataset breakdown, or an exact overall-rating figure) always
+    routes through the complex prompt/template so the DB-exact numbers can be
+    stated verbatim instead of the model trying to (mis)count or estimate
+    them from evidence itself.
     """
     is_complex = (
         decomposed.complexity == "complex"
         or bool(precomputed_count)
         or bool(precomputed_trend)
         or bool(precomputed_breakdown)
+        or bool(precomputed_overall_stats)
     )
     model_used = settings.openai_complex_model if is_complex else settings.openai_simple_model
     prompt_name = "chat_response_complex" if is_complex else "chat_response_simple"
@@ -149,6 +154,7 @@ def build_generation_prompt(
     exact_count: str | None = None,
     trend_comparison: str | None = None,
     exact_breakdown: str | None = None,
+    overall_stats: str | None = None,
 ) -> tuple[str, str]:
     """Render the generation system/user prompt via the given PromptLoader."""
     if is_complex:
@@ -166,6 +172,7 @@ def build_generation_prompt(
             exact_count=exact_count or "None",
             trend_comparison=trend_comparison or "None",
             exact_breakdown=exact_breakdown or "None",
+            overall_stats=overall_stats or "None",
         )
     else:
         gen_system, gen_user = loader.format(
