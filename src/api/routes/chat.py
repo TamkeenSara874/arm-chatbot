@@ -11,6 +11,7 @@
 import asyncio
 import contextlib
 import json
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -325,6 +326,36 @@ async def chat_query(
             )
         )
 
+    # Reply-status fast path — checked ahead of count_query since "how many
+    # reviews haven't I replied to" would otherwise be misclassified as an
+    # exact-countable question and answered with an unrelated number (see
+    # _is_reply_status_question's docstring). No DB column backs this at all,
+    # so this is an honest "I don't have that" rather than a computed answer.
+    if _is_reply_status_question(sanitized):
+        trace.emit()
+        reply_status_msg_id = uuid.uuid4()
+        fire_and_forget(
+            _persist_instant_exchange(
+                session_id=body.session_id,
+                message_id=reply_status_msg_id,
+                sanitized=sanitized,
+                answer=REPLY_STATUS_ANSWER,
+                model_used="reply_status_gate",
+                restaurant_id=restaurant_id,
+                embedder=embedder,
+                vector_store=vector_store,
+            ),
+            name=f"persist-reply-status-{reply_status_msg_id}",
+        )
+        return EventSourceResponse(
+            _yield_instant(
+                ChatResponseSchema(answer=REPLY_STATUS_ANSWER, evidence=[], confidence=1.0),
+                body.session_id,
+                reply_status_msg_id,
+                model_used="reply_status_gate",
+            )
+        )
+
     # count_query fast path — direct Postgres COUNT(*), no LLM generation.
     # A compound question ("how many positive reviews AND how can I
     # improve?") comes back from decomposition as intent=count_query with a
@@ -363,6 +394,18 @@ async def chat_query(
         sentiment_filter = _resolve_sentiment_filter(sanitized, decomposed.sentiment_filter)
         count = await _compute_count(db, restaurant_id, decomposed, sentiment_filter)
         precomputed_count = _format_count_answer(count, sentiment_filter, decomposed.content_filter)
+    elif decomposed.content_filter is not None:
+        # Same rationale as compare_date_filter/breakdown_dimension below: content_filter
+        # is only ever set by decomposition when the question has a real, exact
+        # has-text/no-text count component, independent of what intent label the
+        # classifier assigned -- e.g. "roughly how many reviews have no written text,
+        # and what does that imply for X" can come back as intent=aggregation rather
+        # than count_query. Trust the structured field, not the intent guess, so the
+        # exact count still gets computed and stated verbatim instead of the LLM
+        # estimating it from only the top_k retrieved evidence chunks.
+        sentiment_filter = _resolve_sentiment_filter(sanitized, decomposed.sentiment_filter)
+        count = await _compute_count(db, restaurant_id, decomposed, sentiment_filter)
+        precomputed_count = _format_count_answer(count, sentiment_filter, decomposed.content_filter)
 
     # Trend-comparison fast path — decomposition sets compare_date_filter for
     # a time-period comparison question ("since last month", "compared to
@@ -385,6 +428,22 @@ async def chat_query(
     if decomposed.breakdown_dimension is not None:
         breakdown = await _compute_breakdown(db, restaurant_id, decomposed.breakdown_dimension)
         precomputed_breakdown = _format_breakdown_answer(breakdown, decomposed.breakdown_dimension)
+
+    # Overall-rating fast path — decomposition classifies a plain "what's my
+    # overall rating" / "how are my reviews doing" question as
+    # sentiment_overview. Left to the normal RAG path, this was estimating
+    # the average rating from only the top_k retrieved evidence chunks
+    # (confirmed live: ~3.5/5 from a 6-review sample vs. the real ~3.9-4.0
+    # computed average) -- the same fabricated-precision failure mode as
+    # count_query/trend/breakdown above, just for a question shape those
+    # three don't cover. Computed via the same compute_period_stats already
+    # used by trend comparison and anomaly detection.
+    precomputed_overall_stats: str | None = None
+    if decomposed.intent == "sentiment_overview":
+        overall_stats = await _compute_overall_stats(db, restaurant_id, decomposed)
+        precomputed_overall_stats = _format_overall_stats_answer(
+            overall_stats, decomposed.date_filter
+        )
 
     # Semantic cache check. Uses the decomposed/rephrased query (context- and
     # pronoun-resolved, more canonical than the raw message) so a paraphrase
@@ -434,6 +493,7 @@ async def chat_query(
             precomputed_count=precomputed_count,
             precomputed_trend=precomputed_trend,
             precomputed_breakdown=precomputed_breakdown,
+            precomputed_overall_stats=precomputed_overall_stats,
             db=db,
             simple_client=simple_client,
             complex_client=complex_client,
@@ -659,6 +719,43 @@ _SENTIMENT_KEYWORDS: dict[str, str] = {
     "neutral": "Neutral",
 }
 
+# Deterministic keyword check for "reply status" questions ("how many reviews
+# haven't I replied to?", "show me my unanswered reviews"). ReviewChunkMeta
+# has no reply/response-status column at all -- that's tracked only in the
+# AIO dashboard's own review-management UI, never ingested into this system.
+# Confirmed live: left unguarded, count_query's fast path silently answers
+# with an unrelated exact number (total review count, or a sentiment-filtered
+# count) stated at confidence 1.0, since it has no "unreplied" column to
+# filter by and just drops that part of the question instead of flagging it
+# as unanswerable. A multi-word phrase list (not single words like "reply")
+# keeps this from firing on unrelated questions that happen to contain
+# "answer"/"response" in another sense.
+# Regex, not rigid substrings -- confirmed live that a naive phrase list like
+# "haven't replied" misses natural question-word-order phrasing such as
+# "reviews haven't I replied to yet?", where a pronoun sits between the
+# auxiliary and the verb. `.{0,15}` tolerates that gap (a short pronoun/adverb)
+# without matching across unrelated clauses.
+_REPLY_STATUS_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"have\s*n[o']?t\b.{0,15}\b(repl(y|ied|ies)|respond(ed)?|answer(ed)?)",
+        r"\bun(replied|answered|responded)\b",
+        r"\bnot\s+(yet\s+)?(repl(y|ied)|respond(ed)?|answer(ed)?)\b",
+        r"\breply\s+status\b",
+        r"\bresponse\s+status\b",
+    )
+)
+
+REPLY_STATUS_ANSWER = (
+    "I don't have visibility into which reviews you've replied to -- reply/response status is "
+    "tracked in your AIO dashboard's review management screen, not in the review content I have "
+    "access to. I can help with what the reviews themselves say, though -- want to ask about that?"
+)
+
+
+def _is_reply_status_question(raw_query: str) -> bool:
+    return any(p.search(raw_query) for p in _REPLY_STATUS_PATTERNS)
+
 
 def _resolve_sentiment_filter(raw_query: str, decomposed_filter: str | None) -> str | None:
     """Deterministic keyword override for decomposition's sentiment_filter.
@@ -822,6 +919,39 @@ async def _compute_breakdown(
     return {str(key): count for key, count in result.all()}
 
 
+async def _compute_overall_stats(
+    db: AsyncSession,
+    restaurant_id: int,
+    decomposed,
+) -> PeriodStats:
+    """Exact review count, average rating, and sentiment breakdown via direct
+    SQL, for whatever date range decomposition extracted (or all-time if
+    none). Reuses compute_period_stats (already shared by trend comparison
+    and anomaly detection) rather than estimating an average rating from a
+    handful of retrieved evidence chunks, which can differ meaningfully from
+    the true average (confirmed live: a 6-review sample estimated ~3.5/5
+    while the real computed average was 3.9-4.0).
+    """
+    date_from = decomposed.date_filter.from_date if decomposed.date_filter else None
+    date_to = decomposed.date_filter.to_date if decomposed.date_filter else None
+    return await compute_period_stats(db, restaurant_id, date_from, date_to)
+
+
+def _format_overall_stats_answer(stats: PeriodStats, date_filter) -> str:
+    period = " in the selected period" if date_filter else " (all-time)"
+    if stats.count == 0:
+        return f"No reviews found{period}."
+    if stats.avg_rating is None:
+        return f"You have {stats.count} reviews{period}, but no star ratings are recorded for them."
+    sentiment_parts = ", ".join(
+        f"{label}: {count}" for label, count in sorted(stats.sentiment_counts.items(), key=lambda x: -x[1])
+    )
+    return (
+        f"Exact stats{period}: {stats.count} reviews, average rating {stats.avg_rating}/5. "
+        f"Sentiment breakdown -- {sentiment_parts}."
+    )
+
+
 def _format_breakdown_answer(breakdown: dict[str, int], dimension: str) -> str:
     if not breakdown:
         return f"No reviews have a recorded {dimension}."
@@ -884,6 +1014,7 @@ async def _pipeline_stream(
     precomputed_count: str | None = None,
     precomputed_trend: str | None = None,
     precomputed_breakdown: str | None = None,
+    precomputed_overall_stats: str | None = None,
     precomputed_query_vector: list[float] | None = None,
 ) -> AsyncGenerator[dict, None]:
     settings_ = get_settings()
@@ -938,7 +1069,8 @@ async def _pipeline_stream(
         trace.low_evidence = ranked.low_evidence
 
         gate_answer = check_hallucination_gate(
-            ranked, precomputed_count, precomputed_trend, precomputed_breakdown
+            ranked, precomputed_count, precomputed_trend, precomputed_breakdown,
+            precomputed_overall_stats,
         )
 
         if gate_answer is not None:
@@ -1006,7 +1138,8 @@ async def _pipeline_stream(
                     unverified_note = correction_match.text
 
             selection = select_generation(
-                decomposed, precomputed_count, settings_, precomputed_trend, precomputed_breakdown
+                decomposed, precomputed_count, settings_, precomputed_trend, precomputed_breakdown,
+                precomputed_overall_stats,
             )
             model_used = selection.model_used
             gen_client = complex_client if selection.is_complex else simple_client
@@ -1028,6 +1161,7 @@ async def _pipeline_stream(
                 exact_count=precomputed_count,
                 trend_comparison=precomputed_trend,
                 exact_breakdown=precomputed_breakdown,
+                overall_stats=precomputed_overall_stats,
             )
 
             # LLM streaming
@@ -1066,7 +1200,7 @@ async def _pipeline_stream(
         trace.groundedness_ok = check_count_groundedness(
             answer_text,
             len(ranked.evidence),
-            precomputed_count or precomputed_trend or precomputed_breakdown,
+            precomputed_count or precomputed_trend or precomputed_breakdown or precomputed_overall_stats,
         )
 
         # Build structured response for the final event

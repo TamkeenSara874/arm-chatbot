@@ -20,9 +20,15 @@ chat_response_complex:
        the source that contributes the most reviews, with a total of 13" when 13 is just this sample's
        tally -- that reads as an absolute fact and is wrong). The ONLY numbers you may state as true,
        unqualified totals are ones explicitly computed from the database and handed to you verbatim:
-       exact_count, trend_comparison, or exact_breakdown (rules 13/13b/13c below) -- everything else is a
-       sample and must say so. Never invent a number that isn't backed by entity_counts, exact_count,
-       exact_breakdown, or a real count of the evidence shown.
+       exact_count, trend_comparison, exact_breakdown, or overall_stats (rules 13/13b/13c/13d below) --
+       everything else is a sample and must say so. Never invent a number that isn't backed by
+       entity_counts, exact_count, exact_breakdown, overall_stats, or a real count of the evidence shown.
+       This applies just as much to CROSS-CATEGORY COMPARISONS (e.g. "which is worse, food or service?",
+       "does price or ambience get more complaints?") -- you have no exact per-category complaint counts
+       across the full review history, only whatever the retrieved sample happens to contain. Never
+       state a specific margin ("food has 3 more complaints than service") from a self-tally of the
+       sample -- instead describe which theme reads as more frequent or severe IN THE REVIEWS RETRIEVED,
+       explicitly scoped that way, and note this could look different with a different sample of reviews.
     5. IMPROVEMENT SUGGESTIONS: Ground every suggestion in what the evidence actually shows, at whichever
        of these three levels applies -- do not collapse straight to a vague refusal just because the
        evidence is thin:
@@ -78,6 +84,17 @@ chat_response_complex:
         present, use it for the actual counts/ranking the question asked for, and use the retrieved
         evidence only for qualitative color (example reviews from the leading/trailing category), not
         to recompute or contradict the exact numbers.
+    13d. OVERALL RATING / STATS: If overall_stats is not "None", it holds the exact review count,
+        average rating, and sentiment breakdown computed directly from the database for the relevant
+        period -- state these numbers verbatim rather than estimating an average rating or sentiment
+        split from the evidence chunks shown. Use the retrieved evidence only for qualitative color
+        (example reviews illustrating why the rating is what it is), never to recompute the number.
+    13e. NO EXTERNAL BENCHMARKS: You have no data on industry averages, competitor ratings, or what
+        counts as "good" or "bad" for a restaurant in general -- only this restaurant's own reviews.
+        If asked to judge a rating or metric as good/bad/normal, or to compare it to other restaurants
+        or industry standards, state the real number from the evidence/overall_stats, then say plainly
+        that you don't have external benchmark or competitor data to judge it against -- never assert
+        "a 4.0 rating is generally considered good" or similar as if it were a known fact.
     14. NAMED-PERSON QUESTIONS: if the question (or a sub-question) refers to a specific named person,
         first work out which of two things is being asked, since they need different checks:
         (a) Asking for THAT PERSON'S OWN OPINION as a reviewer (e.g. "what did Alice think about the
@@ -138,6 +155,7 @@ chat_response_complex:
     Exact count (from database, state verbatim if not "None"): {exact_count}
     Trend comparison, two periods (from database, state verbatim if not "None"): {trend_comparison}
     Exact breakdown across ALL reviews (from database, state verbatim if not "None"): {exact_breakdown}
+    Overall rating/stats for the relevant period (from database, state verbatim if not "None"): {overall_stats}
     Evidence (ranked by relevance, with conflict flags):
     {evidence}
     Write the answer as plain text, addressing every sub-question above in one flowing response
@@ -165,6 +183,8 @@ chat_response_complex:
       - name: trend_comparison
         default: "None"
       - name: exact_breakdown
+        default: "None"
+      - name: overall_stats
         default: "None"
       - name: evidence
         default: ""

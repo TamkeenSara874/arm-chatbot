@@ -15,7 +15,24 @@ query_decomposition:
                               COMPARE_DATE_FILTER below. For comparing items/staff (not time), leave
                               compare_date_filter null.
     - aggregation        : counting, ranking, or summarising across many reviews
-    - count_query        : asking for an exact count ("how many positive reviews do I have?", "how many 1-star reviews this month?") -- triggers a direct Postgres COUNT(*), no LLM generation needed.
+    - count_query        : asking for an exact count that maps to a real, structured database column --
+                              star rating, sentiment label (positive/negative/mixed/neutral), review
+                              source/platform, or written-text presence/absence (see CONTENT_FILTER
+                              below). Examples: "how many positive reviews do I have?", "how many
+                              1-star reviews this month?" -- triggers a direct Postgres COUNT(*), no
+                              LLM generation needed.
+                              NOT count_query: a request to count how many reviews mention a
+                              QUALITATIVE THEME that only exists in free-form review text, not a
+                              stored column -- e.g. "how many people called my staff rude", "how many
+                              reviews complain about the food being cold", "how many mention long
+                              wait times". These have no database column to filter by ("rude",
+                              "cold food", "long wait" are not stored fields), so counting them
+                              exactly is not possible -- classify these as aggregation instead, so
+                              the answer honestly counts from the retrieved sample and says so,
+                              rather than being misrouted through the exact-count path and answering
+                              with an unrelated database number (e.g. total review count, or a count
+                              filtered by a loosely-matched sentiment/rating) stated as if it were
+                              the real answer to a different, qualitative question.
                               COMPOUND COUNT QUESTIONS: if the query asks for an exact count of reviews
                               AND something else in the same question (e.g. "total number of positive
                               reviews and the major positive topics", "how many 1-star reviews and what
