@@ -82,9 +82,7 @@ async def main() -> None:
                         "grounded_in": row["grounded_in"],
                         "answer": result.answer,
                         "evidence_count": len(result.evidence),
-                        "evidence_sources": json.dumps(
-                            [e.get("source") for e in result.evidence]
-                        ),
+                        "evidence_sources": json.dumps([e.get("source") for e in result.evidence]),
                         "confidence": result.confidence,
                         "caveats": result.caveats or "",
                         "complexity": result.complexity,
@@ -136,6 +134,7 @@ async def main() -> None:
                 writer.writerows(merged)
 
     final_rows = sorted(existing.values(), key=lambda r: int(r["id"]))
+
     def _to_float(v: object) -> float:
         try:
             return float(v)  # type: ignore[arg-type]
@@ -144,7 +143,9 @@ async def main() -> None:
 
     total_cost = sum(_to_float(r["cost_usd"]) for r in final_rows)
     errors = sum(1 for r in final_rows if r["error"])
-    print(f"\nDone. {len(final_rows)} total questions on file, {errors} with errors, total cost ${total_cost:.4f}")
+    print(
+        f"\nDone. {len(final_rows)} total questions on file, {errors} with errors, total cost ${total_cost:.4f}"
+    )
     print(f"Results written to {RESULTS_PATH}")
 
 

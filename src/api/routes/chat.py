@@ -944,7 +944,8 @@ def _format_overall_stats_answer(stats: PeriodStats, date_filter) -> str:
     if stats.avg_rating is None:
         return f"You have {stats.count} reviews{period}, but no star ratings are recorded for them."
     sentiment_parts = ", ".join(
-        f"{label}: {count}" for label, count in sorted(stats.sentiment_counts.items(), key=lambda x: -x[1])
+        f"{label}: {count}"
+        for label, count in sorted(stats.sentiment_counts.items(), key=lambda x: -x[1])
     )
     return (
         f"Exact stats{period}: {stats.count} reviews, average rating {stats.avg_rating}/5. "
@@ -1069,7 +1070,10 @@ async def _pipeline_stream(
         trace.low_evidence = ranked.low_evidence
 
         gate_answer = check_hallucination_gate(
-            ranked, precomputed_count, precomputed_trend, precomputed_breakdown,
+            ranked,
+            precomputed_count,
+            precomputed_trend,
+            precomputed_breakdown,
             precomputed_overall_stats,
         )
 
@@ -1138,7 +1142,11 @@ async def _pipeline_stream(
                     unverified_note = correction_match.text
 
             selection = select_generation(
-                decomposed, precomputed_count, settings_, precomputed_trend, precomputed_breakdown,
+                decomposed,
+                precomputed_count,
+                settings_,
+                precomputed_trend,
+                precomputed_breakdown,
                 precomputed_overall_stats,
             )
             model_used = selection.model_used
@@ -1200,7 +1208,10 @@ async def _pipeline_stream(
         trace.groundedness_ok = check_count_groundedness(
             answer_text,
             len(ranked.evidence),
-            precomputed_count or precomputed_trend or precomputed_breakdown or precomputed_overall_stats,
+            precomputed_count
+            or precomputed_trend
+            or precomputed_breakdown
+            or precomputed_overall_stats,
         )
 
         # Build structured response for the final event

@@ -90,9 +90,7 @@ class TestComputeOverallStats:
         sentiment_result.all.return_value = [("Positive", 90), ("Negative", 10)]
         db.execute = AsyncMock(side_effect=[count_result, sentiment_result])
 
-        decomposed = MagicMock(
-            date_filter=DateFilter(from_date="2026-06-01", to_date="2026-06-30")
-        )
+        decomposed = MagicMock(date_filter=DateFilter(from_date="2026-06-01", to_date="2026-06-30"))
         result = await _compute_overall_stats(db, restaurant_id=1, decomposed=decomposed)
 
         assert result.count == 100
