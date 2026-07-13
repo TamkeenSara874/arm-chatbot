@@ -16,6 +16,15 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       host: true,
+      // Docker Desktop on Windows doesn't reliably propagate native filesystem
+      // change events from a bind-mounted volume into the Linux container --
+      // confirmed live: an edited component silently kept serving its old
+      // bundle with no HMR log line at all. Polling is slightly more CPU
+      // but works regardless of the host OS/bind-mount setup.
+      watch: {
+        usePolling: true,
+        interval: 300,
+      },
       proxy: {
         '/api': {
           target: apiProxyTarget,

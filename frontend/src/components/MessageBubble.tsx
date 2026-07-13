@@ -1,9 +1,33 @@
 import { BookOpen, Clock, Database, DollarSign, RotateCcw } from 'lucide-react';
 import { useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useSSE } from '../hooks/useSSE';
 import { useChatStore, type LocalMessage } from '../store/chatStore';
 import { CorrectionModal } from './CorrectionModal';
 import { FeedbackButtons } from './FeedbackButtons';
+
+// Renders the assistant's markdown-lite answer (the prompt only ever asks the
+// model for **bold** emphasis, paragraphs, and "- " lists -- links/images
+// aren't something a review-insights answer should ever legitimately need,
+// and the model's own text isn't a trusted source, so both are neutralized
+// to plain text here rather than rendered as live anchors/image requests.
+const MARKDOWN_COMPONENTS = {
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <p className="mb-2 last:mb-0">{children}</p>
+  ),
+  strong: ({ children }: { children?: React.ReactNode }) => (
+    <strong className="font-semibold text-gray-900">{children}</strong>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul className="mb-2 list-disc space-y-0.5 pl-5 last:mb-0">{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol className="mb-2 list-decimal space-y-0.5 pl-5 last:mb-0">{children}</ol>
+  ),
+  a: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
+  img: () => null,
+};
 
 const SOURCE_COLORS: Record<string, string> = {
   Google: 'bg-blue-50 text-blue-700',
@@ -95,6 +119,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       session_id: sessionId,
       restaurant_id: restaurantId,
       message: precedingUserMessage.content,
+      bypass_cache: true,
     });
   }
 
@@ -136,13 +161,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               )}
             </div>
           ) : (
-            <p
-              className={`text-sm text-gray-800 leading-relaxed whitespace-pre-wrap ${
+            <div
+              className={`text-sm text-gray-800 leading-relaxed ${
                 message.isStreaming ? 'streaming-cursor' : ''
               }`}
             >
-              {message.content}
-            </p>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+                {message.content}
+              </ReactMarkdown>
+            </div>
           )}
 
           {currentCaveat && (
