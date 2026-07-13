@@ -26,6 +26,35 @@ BASE_URL = "http://localhost:8000"
 DATASET_PATH = Path(__file__).parent / "dashboard_grounded_qa_dataset.csv"
 RESULTS_PATH = Path(__file__).parent / "dashboard_grounded_qa_results.csv"
 
+# Fixed column order, not derived from whatever keys happen to be on the first
+# row -- bug_status is hand-curated (added out-of-band, not by this script)
+# and every fresh result dict below carries it forward from the existing row
+# rather than dropping it, so a re-run never silently strips manually-written
+# annotations or crashes DictWriter on a fieldname mismatch between old rows
+# (with bug_status) and freshly-overwritten ones (without it).
+FIELDNAMES = [
+    "id",
+    "category",
+    "question_type",
+    "question",
+    "grounded_in",
+    "answer",
+    "evidence_count",
+    "evidence_sources",
+    "confidence",
+    "caveats",
+    "complexity",
+    "model_used",
+    "cached",
+    "server_latency_ms",
+    "wall_clock_ms",
+    "cost_usd",
+    "session_id",
+    "message_id",
+    "error",
+    "bug_status",
+]
+
 
 async def main() -> None:
     if not JWT:
@@ -69,6 +98,10 @@ async def main() -> None:
             session_resp.raise_for_status()
             session_id = session_resp.json()["session_id"]
 
+            # Carry forward any hand-curated bug_status note already on this
+            # row rather than dropping it when the row gets overwritten below.
+            prior_bug_status = existing.get(qid, {}).get("bug_status", "")
+
             wall_start = time.perf_counter()
             try:
                 result = await send_query(client, JWT, session_id, RESTAURANT_ID, question)
@@ -94,6 +127,7 @@ async def main() -> None:
                         "session_id": session_id,
                         "message_id": result.message_id,
                         "error": "",
+                        "bug_status": prior_bug_status,
                     }
                 )
             except Exception as exc:  # noqa: BLE001
@@ -120,6 +154,7 @@ async def main() -> None:
                         "session_id": session_id,
                         "message_id": "",
                         "error": str(exc),
+                        "bug_status": prior_bug_status,
                     }
                 )
 
@@ -129,7 +164,7 @@ async def main() -> None:
                 existing[r["id"]] = r
             merged = sorted(existing.values(), key=lambda r: int(r["id"]))
             with open(RESULTS_PATH, "w", newline="", encoding="utf-8") as out:
-                writer = csv.DictWriter(out, fieldnames=list(merged[0].keys()))
+                writer = csv.DictWriter(out, fieldnames=FIELDNAMES)
                 writer.writeheader()
                 writer.writerows(merged)
 

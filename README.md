@@ -13,6 +13,9 @@ Built for the AIO Internship project using FastAPI, Qdrant, PostgreSQL, Redis, a
 - Routes simple queries to GPT-4o-mini (~$0.0003 typical) and complex aggregation to GPT-4.1 (~$0.005-0.015)
 - Short-circuits count queries directly to PostgreSQL with zero LLM cost
 - Grounds broad "how can I improve?" questions in the real complaint themes found first, before adding any general advice, and cites real counts (e.g. "3 of the 20 reviews mention...") instead of vague words like "several" — never invents a sales/revenue number reviews don't contain
+- States overall rating and sentiment percentages ("18% negative") from an exact SQL computation across the whole restaurant, not an LLM estimate from a handful of retrieved reviews — including for compound questions that also ask for reasoning/advice in the same sentence
+- Counts qualitative themes with no dedicated database column ("how many people called my staff rude") via keyword search across *every* review, not just the ~20 most relevant ones — honestly caveated as a literal keyword match, not a semantic one
+- Bolds the 2-4 most important figures/words in a longer answer so the key takeaway is scannable at a glance, and never surfaces a reviewer's name/username unless the question itself asks about that one specific person
 - Answers questions about the conversation itself (e.g. "what did we talk about before?") from conversation memory alone, with no fake review evidence or confidence score attached, and honestly distinguishes this conversation from an earlier, separate one
 - Caches repeated questions two ways: exact-text (Redis) and semantic/paraphrase (Qdrant similarity search)
 - Generates a downloadable PDF insights report with charts (rating distribution, sentiment, source breakdown, top praised/complained) alongside the narrative summary
@@ -36,12 +39,20 @@ FastAPI /api/v1/
         ├─ Guardrail    (out-of-scope → polite decline; report_howto → answered directly; ui_question → CareBot)
         ├─ Query decomposition  Groq llama-3.3-70b  (~300ms, rotates across free-tier keys on rate limit)
         │       └─ intent · filters · sub-queries · complexity · needs_aggregation
+        │       └─ exact-stat fields, independent of intent: content_filter · breakdown_dimension ·
+        │          compare_date_filter · wants_overall_stats · theme_keywords (each fires whenever its
+        │          own condition applies, regardless of intent -- a compound question like "what % of
+        │          my reviews are negative and how worried should I be" doesn't lose the exact-stat
+        │          computation just because a reasoning tail is attached)
         │       (session context scoped to reference resolution only -- never
         │        allowed to override classification of a self-contained query)
         │
         ├─ conversation_recall → session context only, $0 retrieval, gpt-4o-mini
         ├─ count_query  → Postgres COUNT(*)  $0, <100ms (deterministic sentiment-
         │                 keyword override backs up decomposition's own extraction)
+        ├─ wants_overall_stats → exact avg rating + sentiment % via direct SQL (compute_period_stats)
+        ├─ theme_keywords      → exact keyword-match count across ALL reviews via full_review ILIKE
+        │                        (not just the top_k retrieved sample)
         ├─ report       → OpenAI tool call + DB/Qdrant aggregation → markdown + charts
         ├─ simple       → GPT-4o-mini  ~$0.0003
         └─ complex      → GPT-4.1       ~$0.005-0.015

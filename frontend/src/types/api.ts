@@ -34,6 +34,9 @@ export interface ChatQueryRequest {
   session_id: string;
   restaurant_id: number;
   message: string;
+  // Set on a "Regenerate" request so the backend skips both cache lookups
+  // instead of serving back the same answer being replaced.
+  bypass_cache?: boolean;
 }
 
 export interface ChatQueryResponse {

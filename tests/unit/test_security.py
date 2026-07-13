@@ -5,12 +5,14 @@ from datetime import UTC
 import pytest
 from pydantic import ValidationError
 
-from src.models.schemas import ChatQueryRequest, ChatResponseSchema
+from src.models.schemas import ChatQueryRequest, ChatResponseSchema, EvidenceItem
 from src.utils.security import (
     check_file_upload,
+    redact_reviewer_names,
     sanitize_input,
     scan_for_injection,
     validate_llm_output,
+    wants_reviewer_names,
 )
 
 
@@ -191,3 +193,117 @@ class TestInjectionPenaltyInRanking:
         assert snippets.index(clean.payload["text"]) < snippets.index(flagged.payload["text"]), (
             "Injection-flagged chunk should rank lower than the identical clean chunk"
         )
+
+
+def _ev(username: str | None) -> EvidenceItem:
+    return EvidenceItem(snippet="some review text", username=username)
+
+
+class TestRedactReviewerNames:
+    """Deterministic backstop for the REVIEWER NAME PRIVACY prompt rule --
+    confirmed live that the rule alone isn't a guarantee: a reviewer's real
+    username showed up attached to an example in an answer despite the model
+    never having been asked to name anyone. This runs unconditionally,
+    regardless of whether the model complied with the prompt rule.
+    """
+
+    def test_redacts_username_present_in_answer(self) -> None:
+        answer = 'One reviewer said it was great, "Cat Huffine" called the host rude.'
+        result = redact_reviewer_names(answer, [_ev("Cat Huffine")], raw_query="how are my reviews")
+        assert "Cat Huffine" not in result
+        assert "a reviewer" in result
+
+    def test_leaves_answer_unchanged_when_no_username_present(self) -> None:
+        answer = "Several reviewers mentioned slow service."
+        result = redact_reviewer_names(answer, [_ev("Cat Huffine")], raw_query="how are my reviews")
+        assert result == answer
+
+    def test_skips_username_the_user_asked_about_by_name(self) -> None:
+        # Rule 14(a): the one legitimate case where naming a reviewer is the
+        # actual answer, not a leak -- "what did Cat Huffine think?"
+        answer = "Cat Huffine said the host was rude."
+        result = redact_reviewer_names(
+            answer, [_ev("Cat Huffine")], raw_query="What did Cat Huffine think?"
+        )
+        assert "Cat Huffine" in result
+
+    def test_redacts_multiple_distinct_usernames(self) -> None:
+        answer = "Gary Silansky called the host rude, and T C said the wait was long."
+        evidence = [_ev("Gary Silansky"), _ev("T C")]
+        result = redact_reviewer_names(answer, evidence, raw_query="how are my reviews")
+        assert "Gary Silansky" not in result
+        assert "T C" not in result
+
+    def test_ignores_evidence_with_no_username(self) -> None:
+        answer = "Several reviewers mentioned slow service."
+        result = redact_reviewer_names(answer, [_ev(None)], raw_query="how are my reviews")
+        assert result == answer
+
+    def test_name_ending_in_punctuation_still_matches(self) -> None:
+        # Regression test: a naive \b...\b pattern silently never matches a
+        # name ending in punctuation (e.g. "Jared A.") when followed by
+        # whitespace, since \b requires a word/non-word transition and
+        # punctuation-to-whitespace isn't one.
+        answer = "Jared A. mentioned the food was cold."
+        result = redact_reviewer_names(answer, [_ev("Jared A.")], raw_query="how are my reviews")
+        assert "Jared A." not in result
+        assert "a reviewer" in result
+
+    def test_case_insensitive_match(self) -> None:
+        answer = "cat huffine said the host was rude."
+        result = redact_reviewer_names(answer, [_ev("Cat Huffine")], raw_query="how are my reviews")
+        assert "huffine" not in result.lower()
+
+    def test_explicit_name_request_skips_redaction_entirely(self) -> None:
+        # Regression test: asking "tell me their names" is an explicit,
+        # deliberate request for reviewer identities, not a leak -- reviewer
+        # usernames are already public on the review platform, and the
+        # restaurant owner has a real reason to know who left a review.
+        # Redaction must not fire at all in this case.
+        answer = "Gary Silansky and T C both mentioned slow service."
+        result = redact_reviewer_names(
+            answer,
+            [_ev("Gary Silansky"), _ev("T C")],
+            raw_query="which reviewers mention slow service, tell me their names",
+        )
+        assert result == answer
+
+    def test_who_wrote_phrasing_skips_redaction(self) -> None:
+        answer = "Gary Silansky wrote about slow service."
+        result = redact_reviewer_names(
+            answer, [_ev("Gary Silansky")], raw_query="who wrote about slow service?"
+        )
+        assert result == answer
+
+
+class TestWantsReviewerNames:
+    def test_detects_tell_me_their_names(self) -> None:
+        assert wants_reviewer_names("tell me their names and the reviews they wrote") is True
+
+    def test_detects_who_wrote(self) -> None:
+        assert wants_reviewer_names("who wrote these reviews?") is True
+
+    def test_detects_who_said(self) -> None:
+        assert wants_reviewer_names("who said the food was cold?") is True
+
+    def test_detects_name_them(self) -> None:
+        assert wants_reviewer_names("name them please") is True
+
+    def test_detects_which_specific_customers(self) -> None:
+        # Regression test: this exact phrasing got every reviewer anonymized
+        # despite unambiguously asking for identities -- no "name" or "who"
+        # in the sentence at all, so the original pattern missed it entirely.
+        assert (
+            wants_reviewer_names("can you tell me which specific customers complained about X")
+            is True
+        )
+
+    def test_detects_which_n_reviewers(self) -> None:
+        assert (
+            wants_reviewer_names("which 8 reviewers mention both slow service and cold food")
+            is True
+        )
+
+    def test_plain_question_is_false(self) -> None:
+        assert wants_reviewer_names("how are my reviews doing?") is False
+        assert wants_reviewer_names("which reviews mention slow service?") is False

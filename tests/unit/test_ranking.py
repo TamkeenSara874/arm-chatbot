@@ -196,6 +196,23 @@ class TestRankResults:
         ranking = rank_results([chunk], _mock_settings(), top_k=1)
         assert ranking.evidence[0].date_inferred is True
 
+    def test_review_date_propagated_to_evidence(self) -> None:
+        # Regression coverage: a specific person named based on a review
+        # needs that review's own date visible, not just the aggregate
+        # staleness_caveat (which only fires when most evidence is old) --
+        # confirmed as a real gap once REVIEWER/STAFF NAME PRIVACY started
+        # allowing real names through on explicit request.
+        chunk = _make_result("c1", days_old=10)
+        ranking = rank_results([chunk], _mock_settings(), top_k=1)
+        expected_date = (datetime.now(tz=UTC) - timedelta(days=10)).strftime("%Y-%m-%d")
+        assert ranking.evidence[0].review_date == expected_date
+
+    def test_review_date_none_when_unparseable(self) -> None:
+        chunk = _make_result("c1")
+        chunk.payload["review_date"] = "not-a-date"
+        ranking = rank_results([chunk], _mock_settings(), top_k=1)
+        assert ranking.evidence[0].review_date is None
+
     def test_empty_input_returns_empty_result(self) -> None:
         ranking = rank_results([], _mock_settings(), top_k=6)
         assert ranking.evidence == []

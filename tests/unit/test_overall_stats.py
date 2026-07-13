@@ -47,6 +47,20 @@ class TestFormatOverallStatsAnswer:
         assert "Positive: 1349" in result
         assert "Negative: 500" in result
 
+    def test_sentiment_breakdown_includes_percentage(self) -> None:
+        # Regression test: "what percentage of my reviews are negative" was
+        # previously answered by estimating from a 20-review retrieved sample
+        # (a query containing "negative" skews its own semantic retrieval
+        # toward negative reviews, estimating ~75% against a real ~19%).
+        # Precomputing the percentage here means the LLM states it verbatim
+        # instead of dividing count/total itself.
+        stats = PeriodStats(
+            count=100, avg_rating=3.5, sentiment_counts={"Negative": 19, "Positive": 81}
+        )
+        result = _format_overall_stats_answer(stats, None)
+        assert "19 (19%)" in result
+        assert "81 (81%)" in result
+
     def test_sentiment_breakdown_sorted_descending(self) -> None:
         stats = PeriodStats(
             count=10,

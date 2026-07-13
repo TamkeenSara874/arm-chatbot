@@ -100,3 +100,31 @@ async def test_decompose_passes_temperature_zero() -> None:
     await decompose_query(client, "test", system="sys")
     _, kwargs = client.complete_structured.call_args
     assert kwargs.get("temperature") == 0.0
+
+
+@pytest.mark.asyncio
+async def test_null_rephrased_query_does_not_raise() -> None:
+    """Regression test: Groq (temperature=0.0) was confirmed live to return
+    "rephrased_query": null for one specific prompt -- deterministic, so every
+    retry against a different API key reproduced the identical validation
+    failure, wastefully cycling through all 8 keys (each several seconds)
+    before ever reaching this function's own corrective retry. The schema
+    itself now coerces None to "" for this field (see DecomposedQuery in
+    schemas.py), so a single valid-shaped response with a null field succeeds
+    immediately -- no retry needed at all.
+    """
+    raw = json.dumps(
+        {
+            "intent": "factual",
+            "complexity": "simple",
+            "rephrased_query": None,
+            "entities": None,
+            "sub_queries": None,
+        }
+    )
+    client = _make_client([raw])
+    result = await decompose_query(client, "some query", system="...")
+    assert result.rephrased_query == ""
+    assert result.entities == []
+    assert result.sub_queries == []
+    assert client.complete_structured.call_count == 1

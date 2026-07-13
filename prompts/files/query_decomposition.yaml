@@ -6,7 +6,9 @@ query_decomposition:
     INTENT VALUES:
     - best_item          : asking what is best/most praised
     - worst_item         : asking what is worst/most complained about
-    - sentiment_overview : asking about overall sentiment or rating
+    - sentiment_overview : asking about overall sentiment or rating -- see WANTS_OVERALL_STATS below,
+                              which is what actually triggers the exact computation for this kind of
+                              question; still pick this intent label when it's the best fit
     - specific_aspect    : asking about one specific aspect (food/service/ambiance/price)
     - comparison         : comparing items, staff, or time periods. For a TIME-PERIOD comparison
                               ("since last month", "compared to last week", "how has this changed
@@ -26,24 +28,26 @@ query_decomposition:
                               stored column -- e.g. "how many people called my staff rude", "how many
                               reviews complain about the food being cold", "how many mention long
                               wait times". These have no database column to filter by ("rude",
-                              "cold food", "long wait" are not stored fields), so counting them
-                              exactly is not possible -- classify these as aggregation instead, so
-                              the answer honestly counts from the retrieved sample and says so,
-                              rather than being misrouted through the exact-count path and answering
-                              with an unrelated database number (e.g. total review count, or a count
-                              filtered by a loosely-matched sentiment/rating) stated as if it were
-                              the real answer to a different, qualitative question.
+                              "cold food", "long wait" are not stored fields), so an exact SQL count
+                              by column is not possible -- classify these as aggregation instead, and
+                              set THEME_KEYWORDS (see below) so the answer still gets a real,
+                              whole-dataset keyword-matched count rather than being misrouted through
+                              the exact-count path and answering with an unrelated database number
+                              (e.g. total review count, or a count filtered by a loosely-matched
+                              sentiment/rating) stated as if it were the real answer to a different,
+                              qualitative question.
                               COMPOUND COUNT QUESTIONS: if the query asks for an exact count of reviews
                               AND something else in the same question (e.g. "total number of positive
                               reviews and the major positive topics", "how many 1-star reviews and what
                               do they complain about", "how many positive reviews do I have and how can
                               I improve?"), still classify intent as count_query -- put the other,
                               non-countable part into sub_queries so it's answered too, alongside the
-                              exact database count. Do NOT classify these as aggregation or
-                              sentiment_overview just because part of the question also asks for a
-                              summary/topics/improvement -- the countable half always takes priority for
-                              intent classification, since only count_query triggers the exact database
-                              count this kind of question needs.
+                              exact database count. The countable half always takes priority for THIS
+                              intent label specifically, since count_query is the one exact-stat signal
+                              still gated on intent rather than its own independent field -- see
+                              EXACT-STAT FIELDS ARE INDEPENDENT OF INTENT below for why the other
+                              exact-stat cases (breakdown, trend comparison, overall stats) don't need
+                              this same carve-out.
     - report             : asking for a comprehensive report or summary document ("give me a report", "summarise this month", "export insights") -- triggers structured report generation with DB aggregations and a downloadable markdown output
     - improvement        : asking how to improve (answer from review evidence only; if no evidence, state limitation)
     - factual            : asking a specific fact about the restaurant's REVIEWS (e.g., last review date,
@@ -70,6 +74,17 @@ query_decomposition:
     - multi_location        : user is asking to compare reviews across multiple restaurant branches or locations -- the system only holds data for one restaurant at a time, blocked by guardrail
     - allergen              : user is asking about specific allergen safety, whether a dish is safe for someone with an allergy, or similar food safety questions -- must not answer from reviews; redirect to kitchen team
 
+    EXACT-STAT FIELDS ARE INDEPENDENT OF INTENT: content_filter, breakdown_dimension,
+    compare_date_filter, wants_overall_stats, theme_keywords, and compare_theme_keywords (all defined
+    below in the user prompt section) each represent one real, database-computable fact. Set each one
+    whenever its own narrow condition applies, regardless of what intent you assign and regardless of
+    whatever else the question also asks. Never let a reasoning/advice/qualitative tail in the same question ("...and how
+    worried should I be", "...and what should I do", "...and how can I improve", "...and why") stop you
+    from setting one of these fields -- put the non-computable part of the question into sub_queries
+    instead, so it still gets answered too, alongside the exact figure. (count_query is the one
+    exception that still requires picking a specific intent label rather than an independent field --
+    see COMPOUND COUNT QUESTIONS above.)
+
     SESSION CONTEXT USAGE: the session context below is ONLY for resolving pronouns, ellipsis, or implicit
     references in the CURRENT query (e.g. "what about that?", "the same period", "and the desserts?"). It
     must NOT change intent/complexity classification for a query that is already clear and self-contained
@@ -94,7 +109,21 @@ query_decomposition:
     COMPARE_DATE_FILTER: only for a TIME-PERIOD comparison question (e.g. "how has this changed since last month", "compared to last week", "is this better than last quarter"). date_filter must hold the current/more-recent period and compare_date_filter the earlier period being compared against -- both as {{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}}, using the "Today's date" given above as the reference point. E.g. if today is 2026-07-06 and the query says "since last month": date_filter = 2026-07-01 to 2026-07-06, compare_date_filter = 2026-06-01 to 2026-06-30. If the query gives no explicit current-period bound (e.g. just "vs last month"), default date_filter to the last 30 days. LONGER LOOKBACKS ("over the last N years", "since 2020", "compared to 3 years ago"): split the whole lookback into two equal, adjacent spans rather than two single-day anchors -- date_filter = the more recent half of the lookback, compare_date_filter = the earlier half. E.g. if today is 2026-07-08 and the query says "how did reviews improve over the last 2 years": date_filter = 2025-07-08 to 2026-07-08, compare_date_filter = 2024-07-08 to 2025-07-08 (NOT single days 2026-07-08 and 2024-07-08). NEVER set from_date equal to to_date for either period in a comparison -- a comparison always needs two real, non-empty spans of time, not two single-day snapshots, unless the user is explicitly asking about one specific calendar date. For any non-time-period comparison, or any query without comparison phrasing, output null for compare_date_filter.
     RATING_FILTER: if the query mentions a star rating condition ("under 3 stars", "1-star reviews", "rating below 4"), extract as {{"min": N, "max": N}} using the 1-5 scale. If no rating filter, output null.
     BREAKDOWN_DIMENSION: set this when the query asks for an exact distribution or ranking ACROSS THE WHOLE RESTAURANT by one specific dimension -- "which review source contributes the most/least/exactly N reviews", "breakdown by rating", "how many reviews come from each platform", "distribution of sentiment across all reviews". Output exactly one of "source", "rating", or "sentiment" (matching which dimension the question is about), or null if the question isn't asking for a whole-dataset breakdown by one of these three. This is different from a normal aggregation/improvement question (e.g. "what do people say about service") -- only set this when the question's core ask IS the distribution/ranking itself, computed exactly, not a qualitative synthesis. Never set this for a question about written-text presence (e.g. "how many reviews have no written text") -- see CONTENT_FILTER below instead.
+                              ALSO set breakdown_dimension="source" for a question asking WHY or HOW a
+                              rating differs between two or more specific review platforms/sources (e.g.
+                              "why is my rating on Yelp so much lower than on Google?", "how does my
+                              Tripadvisor rating compare to Google?") -- the exact per-platform average
+                              rating is the factual anchor this kind of reasoning question needs (source
+                              breakdown includes avg rating per source, not just counts), even though the
+                              question's surface form is "why"/reasoning rather than a plain distribution
+                              request. Still set intent to whatever best fits the reasoning shape (e.g.
+                              "comparison" or "specific_aspect"); breakdown_dimension is independent of
+                              intent, same as the other exact-stat fields above.
     CONTENT_FILTER: set this when the query asks specifically about whether reviews HAVE written text/comments or are rating-only with no text (e.g. "how many reviews have a star rating but no written text", "star-rating-only reviews", "reviews with no comments"). Output "no_text" for reviews without written text, "has_text" for reviews that do have written text, or null if the query doesn't ask about this. This maps to an exact database column -- always set it whenever the question's countable condition is about text presence/absence, even if the question also asks something else in the same sentence (e.g. "how many reviews have no text, and what does that mean for analysis" -- still set content_filter="no_text").
+    WANTS_OVERALL_STATS: set true when the query asks about the restaurant's overall rating, overall sentiment, or what percentage/proportion of reviews are positive/negative/neutral/mixed (e.g. "what's my overall rating", "how are my reviews doing overall", "what percentage of my reviews are negative", "what % of reviews are positive"). Set this to true EVEN IF the question also asks for reasoning or advice in the same sentence (e.g. "what percentage of my reviews are negative and how worried should I be" -- still set wants_overall_stats=true, and put "how worried should I be" into sub_queries so it's answered too). Set false for a question about one specific aspect/item ("what do people think about the pasta"), a qualitative theme with no stored column ("how many people called my staff rude" -- see THEME_KEYWORDS instead), or anything that doesn't need the actual database rating/sentiment totals.
+    THEME_KEYWORDS: set this when the query asks how many/what share of reviews mention a QUALITATIVE THEME with no dedicated database column (e.g. "how many people called my staff rude or unfriendly", "how many reviews complain about the food being cold", "how many mention long wait times"). Output a list of 2-5 lowercase keyword/phrase variants that cover how reviewers would plausibly phrase this theme (e.g. for "rude or unfriendly staff": ["rude", "unfriendly", "hostile"]; for "cold food": ["cold food", "food was cold", "served cold"]), or null if the question isn't asking to count a qualitative theme. CRITICAL: keywords must be real words/short phrases a reviewer would actually type -- never output a description OF the theme itself (e.g. NEVER ["complaints about food quality"] -- nobody writes that exact phrase, so it matches nothing; instead output the actual complaint words: ["bland", "cold food", "undercooked", "overcooked", "tasteless"]). Set this EVEN IF the question also asks something else in the same sentence -- put that other part into sub_queries. Do not set this for a question that only needs a qualitative summary/discussion without a "how many" count (e.g. "what do people say about the staff" -- no count is being asked for, so leave this null and classify as aggregation/specific_aspect normally).
+    COMPARE_THEME_KEYWORDS: set this alongside theme_keywords when the query compares TWO qualitative themes against each other (e.g. "which has more complaints: food quality or staff behavior, and by how much?", "are there more complaints about service or about the food?"). theme_keywords holds the first theme's real complaint words (e.g. staff/service: ["rude", "unfriendly", "inattentive", "slow service"]), compare_theme_keywords holds the second theme's (e.g. food quality: ["bland", "cold food", "undercooked", "tasteless"]) -- same CRITICAL rule as THEME_KEYWORDS applies to both: real words reviewers would write, never a description of the theme. Output null (not set) for a single-theme question or any question that isn't comparing two qualitative themes.
+    THEME_REQUIRE_BOTH: set this to true ONLY when the query asks how many reviews mention BOTH themes TOGETHER in the same review (e.g. "which reviews mention both slow service and cold food?", "how many complain about slow service AND cold food at the same time?", "reviews that had both rude staff and bad food"). This changes the meaning of theme_keywords + compare_theme_keywords from "compare which is more common" to "count only reviews where both are present at once" -- do NOT set this for a plain comparison question ("which is worse, X or Y") or a single-theme question. CRITICAL: never merge two themes' keywords into a single theme_keywords list to fake a "both" answer -- that computes an OR (any review mentioning either theme), not the AND the question actually asked for, and produces a number that contradicts what the evidence actually shows. Always use theme_keywords for the first theme, compare_theme_keywords for the second, and this flag to mark it as a "both together" question. Default false.
 
     Output JSON:
     {{
@@ -111,7 +140,11 @@ query_decomposition:
       "rating_filter": {{"min": 1, "max": 5}} or null,
       "compare_date_filter": {{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}} or null,
       "breakdown_dimension": "<source|rating|sentiment|null>",
-      "content_filter": "<has_text|no_text|null>"
+      "content_filter": "<has_text|no_text|null>",
+      "wants_overall_stats": <true|false>,
+      "theme_keywords": ["<keyword 1>", "<keyword 2>"] or null,
+      "compare_theme_keywords": ["<keyword 1>", "<keyword 2>"] or null,
+      "theme_require_both": <true|false>
     }}
   parameters:
     user:

@@ -56,7 +56,12 @@ from src.core.guardrail import check_guardrail
 from src.core.ranking import rank_results
 from src.core.report import generate_report
 from src.core.retrieval import RetrievalTiming, build_retrieval_params, hybrid_retrieve
-from src.core.review_stats import PeriodStats, compute_period_stats
+from src.core.review_stats import (
+    PeriodStats,
+    compute_period_stats,
+    compute_theme_cooccurrence_count,
+    compute_theme_count,
+)
 from src.core.semantic_cache import (
     find_cached_response,
     invalidate_cached_response,
@@ -92,7 +97,7 @@ from src.services.prompt_service import get_prompt_loader
 from src.services.vector.base import BaseVectorStore
 from src.utils.background import fire_and_forget
 from src.utils.metrics import active_sessions_gauge, count_query_total
-from src.utils.security import sanitize_input, validate_llm_output
+from src.utils.security import redact_reviewer_names, sanitize_input, validate_llm_output
 from src.utils.tracing import RequestTrace
 
 logger = structlog.get_logger()
@@ -204,8 +209,10 @@ async def chat_query(
             )
         )
 
-    # Cache check before any LLM work
-    cached_data = await cache.get(restaurant_id, sanitized)
+    # Cache check before any LLM work -- skipped on a regenerate request
+    # (body.bypass_cache), which exists specifically so "Regenerate" produces
+    # an actually-fresh answer instead of the same cached one it's replacing.
+    cached_data = None if body.bypass_cache else await cache.get(restaurant_id, sanitized)
     if cached_data:
         trace.cache_hit = True
         trace.emit()
@@ -429,21 +436,96 @@ async def chat_query(
         breakdown = await _compute_breakdown(db, restaurant_id, decomposed.breakdown_dimension)
         precomputed_breakdown = _format_breakdown_answer(breakdown, decomposed.breakdown_dimension)
 
-    # Overall-rating fast path — decomposition classifies a plain "what's my
-    # overall rating" / "how are my reviews doing" question as
-    # sentiment_overview. Left to the normal RAG path, this was estimating
-    # the average rating from only the top_k retrieved evidence chunks
-    # (confirmed live: ~3.5/5 from a 6-review sample vs. the real ~3.9-4.0
-    # computed average) -- the same fabricated-precision failure mode as
+    # Overall-rating fast path — decomposition sets wants_overall_stats for a
+    # plain "what's my overall rating" / "how are my reviews doing" / "what
+    # percentage of my reviews are negative" question. Left to the normal RAG
+    # path, this was estimating the average rating (or sentiment percentage)
+    # from only the top_k retrieved evidence chunks (confirmed live: ~3.5/5
+    # from a 6-review sample vs. the real ~3.9-4.0 computed average; and
+    # separately, a "what % negative" question that retrieves review text
+    # containing "negative" skews its own sample negative, estimating 75%
+    # against a real ~19%) -- the same fabricated-precision failure mode as
     # count_query/trend/breakdown above, just for a question shape those
     # three don't cover. Computed via the same compute_period_stats already
     # used by trend comparison and anomaly detection.
+    #
+    # Deliberately gated on the independent wants_overall_stats field, not on
+    # decomposed.intent == "sentiment_overview" -- a compound question ("what
+    # % of my reviews are negative and how worried should I be") must not
+    # lose this signal just because the reasoning tail pulls intent
+    # classification toward aggregation instead. See EXACT-STAT FIELDS ARE
+    # INDEPENDENT OF INTENT in query_decomposition.yaml.
     precomputed_overall_stats: str | None = None
-    if decomposed.intent == "sentiment_overview":
+    if decomposed.wants_overall_stats:
         overall_stats = await _compute_overall_stats(db, restaurant_id, decomposed)
         precomputed_overall_stats = _format_overall_stats_answer(
             overall_stats, decomposed.date_filter
         )
+
+    # Theme-count fast path — decomposition sets theme_keywords for a
+    # qualitative-theme count question ("how many people called my staff
+    # rude", "how many reviews complain about cold food"). These have no
+    # dedicated database column (unlike count_query's rating/sentiment/
+    # source/content_filter), so before this they were answered honestly but
+    # only from the top_k=20 retrieved sample ("at least 12 of the 20
+    # retrieved reviews..."), which could badly undercount a theme that
+    # actually appears in far more of the 2,753 reviews. Counted via
+    # full_review ILIKE across the WHOLE restaurant instead -- still a
+    # keyword-match approximation (misses differently-worded mentions), but
+    # scans every review, not just whatever retrieval happened to surface.
+    precomputed_theme_count: str | None = None
+    if decomposed.theme_keywords:
+        date_from = decomposed.date_filter.from_date if decomposed.date_filter else None
+        date_to = decomposed.date_filter.to_date if decomposed.date_filter else None
+        if decomposed.compare_theme_keywords and decomposed.theme_require_both:
+            # Co-occurrence ("which reviews mention both slow service and
+            # cold food?") -- confirmed live as a real bug: with no way to
+            # express "both together," decomposition folded both themes into
+            # one flat OR-matched list, so the exact count reported "any
+            # review mentioning slow service OR cold food" while worded as
+            # if it meant "both at once" -- directly contradicting the
+            # model's own read of the retrieved evidence, which found no
+            # review actually mentioning both. This is a real AND across the
+            # two keyword groups, computed via a dedicated SQL query.
+            both_count = await compute_theme_cooccurrence_count(
+                db,
+                restaurant_id,
+                decomposed.theme_keywords,
+                decomposed.compare_theme_keywords,
+                date_from,
+                date_to,
+            )
+            precomputed_theme_count = _format_theme_cooccurrence_answer(
+                both_count, decomposed.theme_keywords, decomposed.compare_theme_keywords
+            )
+        elif decomposed.compare_theme_keywords:
+            # Two-theme comparison ("which has more complaints: food quality
+            # or staff behavior, and by how much?") -- confirmed live as a
+            # real gap: decomposition tried to set theme_keywords to the
+            # literal phrase "complaints about food quality" (matching zero
+            # reviews, since nobody writes that exact phrase), so the model
+            # fell back to eyeballing which theme seemed more common in only
+            # the 20 retrieved reviews. Both themes now get their own exact,
+            # whole-corpus count the same way a single theme does.
+            theme_count = await compute_theme_count(
+                db, restaurant_id, decomposed.theme_keywords, date_from, date_to
+            )
+            compare_count = await compute_theme_count(
+                db, restaurant_id, decomposed.compare_theme_keywords, date_from, date_to
+            )
+            precomputed_theme_count = _format_theme_comparison_answer(
+                theme_count,
+                decomposed.theme_keywords,
+                compare_count,
+                decomposed.compare_theme_keywords,
+            )
+        else:
+            theme_count = await compute_theme_count(
+                db, restaurant_id, decomposed.theme_keywords, date_from, date_to
+            )
+            precomputed_theme_count = _format_theme_count_answer(
+                theme_count, decomposed.theme_keywords
+            )
 
     # Semantic cache check. Uses the decomposed/rephrased query (context- and
     # pronoun-resolved, more canonical than the raw message) so a paraphrase
@@ -462,6 +544,11 @@ async def chat_query(
         settings.qdrant_collection_chat_cache,
         threshold=settings.semantic_cache_similarity_threshold,
     )
+    # bypass_cache still reuses cache_query_vector for retrieval below (no
+    # point embedding the same text twice), it just refuses to treat a
+    # semantic match as a hit -- same reasoning as the exact-text skip above.
+    if body.bypass_cache:
+        cached_semantic = None
     if cached_semantic:
         trace.cache_hit = True
         trace.emit()
@@ -494,6 +581,7 @@ async def chat_query(
             precomputed_trend=precomputed_trend,
             precomputed_breakdown=precomputed_breakdown,
             precomputed_overall_stats=precomputed_overall_stats,
+            precomputed_theme_count=precomputed_theme_count,
             db=db,
             simple_client=simple_client,
             complex_client=complex_client,
@@ -895,9 +983,9 @@ async def _compute_breakdown(
     db: AsyncSession,
     restaurant_id: int,
     dimension: str,
-) -> dict[str, int]:
-    """Exact GROUP BY count across the WHOLE restaurant's reviews by one
-    dimension (source/rating/sentiment) via direct SQL.
+) -> dict[str, tuple[int, float | None]]:
+    """Exact GROUP BY count + avg rating across the WHOLE restaurant's
+    reviews by one dimension (source/rating/sentiment) via direct SQL.
 
     Mirrors _compute_count/_compute_trend_comparison's rationale: a "which
     source has the most reviews" question needs the real total, not a tally
@@ -905,10 +993,17 @@ async def _compute_breakdown(
     `dimension` is only ever one of the three keys in _BREAKDOWN_COLUMNS
     (constrained by DecomposedQuery's Literal type), so this never builds a
     column reference from raw user/model text.
+
+    Also computes avg rating per group -- added after a real gap surfaced
+    live: "why is my rating on Yelp so much lower than on Google?" had no
+    exact per-platform rating to reason from at all (only per-platform
+    review *counts* were computed), so the model could only speculate about
+    generic reasons rather than starting from the real numbers the dashboard
+    itself shows (e.g. "Google 4.0 vs Yelp 3.2").
     """
     column = _BREAKDOWN_COLUMNS[dimension]
     stmt = (
-        select(column, func.count())
+        select(column, func.count(), func.avg(ReviewChunkMeta.rating))
         .select_from(ReviewChunkMeta)
         .where(ReviewChunkMeta.chunk_index == 0)
         .where(ReviewChunkMeta.restaurant_id == restaurant_id)
@@ -916,7 +1011,10 @@ async def _compute_breakdown(
         .group_by(column)
     )
     result = await db.execute(stmt)
-    return {str(key): count for key, count in result.all()}
+    return {
+        str(key): (count, round(avg_rating, 2) if avg_rating is not None else None)
+        for key, count, avg_rating in result.all()
+    }
 
 
 async def _compute_overall_stats(
@@ -943,8 +1041,11 @@ def _format_overall_stats_answer(stats: PeriodStats, date_filter) -> str:
         return f"No reviews found{period}."
     if stats.avg_rating is None:
         return f"You have {stats.count} reviews{period}, but no star ratings are recorded for them."
+    # Percentages are precomputed here (not left for the LLM to divide count/total
+    # itself) so a "what percentage of my reviews are negative" question gets the
+    # exact figure verbatim -- the same rationale as stating count/avg_rating verbatim.
     sentiment_parts = ", ".join(
-        f"{label}: {count}"
+        f"{label}: {count} ({count / stats.count:.0%})"
         for label, count in sorted(stats.sentiment_counts.items(), key=lambda x: -x[1])
     )
     return (
@@ -953,13 +1054,67 @@ def _format_overall_stats_answer(stats: PeriodStats, date_filter) -> str:
     )
 
 
-def _format_breakdown_answer(breakdown: dict[str, int], dimension: str) -> str:
+def _format_theme_count_answer(count: int, keywords: list[str]) -> str:
+    # Phrased for a non-technical restaurant owner, not as an internal
+    # mechanism description -- "keyword search"/"keyword match" leaked
+    # through to a live answer once already (confirmed live) because this
+    # text is threaded verbatim into the generation prompt as the caveat the
+    # model is told to keep. Say what the number covers and its real
+    # limitation, without naming the technique used to compute it.
+    keyword_list = ", ".join(f'"{kw}"' for kw in keywords)
+    return (
+        f"Exact count across all your reviews: {count} review(s) mention {keyword_list} "
+        "(or similar wording). This covers every review, not just a sample, but it may "
+        "still miss reviews that describe the same issue using different words."
+    )
+
+
+def _format_theme_comparison_answer(
+    count_a: int, keywords_a: list[str], count_b: int, keywords_b: list[str]
+) -> str:
+    words_a = ", ".join(f'"{kw}"' for kw in keywords_a)
+    words_b = ", ".join(f'"{kw}"' for kw in keywords_b)
+    diff = abs(count_a - count_b)
+    if count_a == count_b:
+        comparison = f"Both appear in the same number of reviews ({count_a})."
+    else:
+        leader_words = words_a if count_a > count_b else words_b
+        comparison = f"{leader_words} appears in {diff} more review(s)."
+    return (
+        f"Exact counts across all your reviews, not just a sample: {count_a} review(s) mention "
+        f"{words_a} (or similar wording); {count_b} review(s) mention {words_b} (or similar "
+        f"wording). {comparison} Both counts may still miss reviews phrased differently."
+    )
+
+
+def _format_theme_cooccurrence_answer(
+    count: int, keywords_a: list[str], keywords_b: list[str]
+) -> str:
+    words_a = ", ".join(f'"{kw}"' for kw in keywords_a)
+    words_b = ", ".join(f'"{kw}"' for kw in keywords_b)
+    return (
+        f"Exact count across all your reviews, not just a sample: {count} review(s) mention "
+        f"{words_a} AND {words_b} together in the same review. This may still miss reviews "
+        "phrased differently, but it is not limited to whatever reviews happened to be retrieved."
+    )
+
+
+def _format_breakdown_answer(breakdown: dict[str, tuple[int, float | None]], dimension: str) -> str:
     if not breakdown:
         return f"No reviews have a recorded {dimension}."
-    parts = ", ".join(
-        f"{label}: {count}" for label, count in sorted(breakdown.items(), key=lambda x: -x[1])
-    )
-    total = sum(breakdown.values())
+    ordered = sorted(breakdown.items(), key=lambda x: -x[1][0])
+    if dimension == "source":
+        # Avg rating per source is the actual number a "why is my rating on
+        # Yelp lower than Google" question needs -- count alone can't answer it.
+        parts = ", ".join(
+            f"{label}: {count} reviews, avg rating {avg_rating}/5"
+            if avg_rating is not None
+            else f"{label}: {count} reviews"
+            for label, (count, avg_rating) in ordered
+        )
+    else:
+        parts = ", ".join(f"{label}: {count}" for label, (count, _) in ordered)
+    total = sum(count for count, _ in breakdown.values())
     return f"Exact breakdown by {dimension} across all {total} reviews -- {parts}."
 
 
@@ -1016,6 +1171,7 @@ async def _pipeline_stream(
     precomputed_trend: str | None = None,
     precomputed_breakdown: str | None = None,
     precomputed_overall_stats: str | None = None,
+    precomputed_theme_count: str | None = None,
     precomputed_query_vector: list[float] | None = None,
 ) -> AsyncGenerator[dict, None]:
     settings_ = get_settings()
@@ -1075,6 +1231,7 @@ async def _pipeline_stream(
             precomputed_trend,
             precomputed_breakdown,
             precomputed_overall_stats,
+            precomputed_theme_count,
         )
 
         if gate_answer is not None:
@@ -1148,6 +1305,7 @@ async def _pipeline_stream(
                 precomputed_trend,
                 precomputed_breakdown,
                 precomputed_overall_stats,
+                precomputed_theme_count,
             )
             model_used = selection.model_used
             gen_client = complex_client if selection.is_complex else simple_client
@@ -1170,6 +1328,7 @@ async def _pipeline_stream(
                 trend_comparison=precomputed_trend,
                 exact_breakdown=precomputed_breakdown,
                 overall_stats=precomputed_overall_stats,
+                theme_count=precomputed_theme_count,
             )
 
             # LLM streaming
@@ -1197,6 +1356,12 @@ async def _pipeline_stream(
         # model ignores the plain-text instruction and wraps its reply in a
         # fence or JSON.
         answer_text = clean_answer_text(full_answer)
+        # Deterministic backstop for the REVIEWER NAME PRIVACY prompt rule --
+        # confirmed live that the rule alone isn't a guarantee (a reviewer's
+        # real username showed up attached to an example despite never being
+        # asked for). Runs unconditionally, regardless of whether the model
+        # complied with the prompt rule.
+        answer_text = redact_reviewer_names(answer_text, ranked.evidence, sanitized)
         sub_answers: list[SubAnswer] = []
 
         # Groundedness heuristic: does the answer state a review/mention count
@@ -1211,7 +1376,8 @@ async def _pipeline_stream(
             precomputed_count
             or precomputed_trend
             or precomputed_breakdown
-            or precomputed_overall_stats,
+            or precomputed_overall_stats
+            or precomputed_theme_count,
         )
 
         # Build structured response for the final event

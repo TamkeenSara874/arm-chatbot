@@ -26,6 +26,39 @@ SESSION_MEMORY_COLLECTION = "session_memory"
 # cross-session match can come from.
 MAX_CROSS_SESSION_AGE_DAYS = 90
 
+# Below this, a recent-turn is still part of the active back-and-forth --
+# no point annotating something from 5 minutes ago as "old."
+_RECENT_TURN_STALE_THRESHOLD_MINUTES = 30
+
+
+def _elapsed_note(created_at: datetime | None, now: datetime) -> str:
+    """Inline " (N minutes/hours ago)" note for a same-session recent turn.
+
+    The cross-session relevant-turn path above already labels a turn from a
+    *different* session with how long ago it happened, specifically so the
+    model can judge whether it's still current. The same-session "[Recent
+    messages]" block had no equivalent -- confirmed live as a real bug: a
+    session left open for over an hour had an old, unrelated exchange
+    ("...how worried should I be?") blended into the answer to a brand new,
+    unrelated question ("what the overall rating of my restaurant"), because
+    nothing in the prompt signaled that turn was over an hour stale rather
+    than the message right before it. Below the threshold, no note is added
+    -- an actively continuing conversation doesn't need one.
+    """
+    if created_at is None:
+        return ""
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    minutes_ago = (now - created_at).total_seconds() / 60
+    if minutes_ago < _RECENT_TURN_STALE_THRESHOLD_MINUTES:
+        return ""
+    if minutes_ago < 120:
+        return f" ({int(minutes_ago)} minutes ago)"
+    hours_ago = minutes_ago / 60
+    if hours_ago < 48:
+        return f" ({int(hours_ago)} hours ago)"
+    return f" ({int(hours_ago / 24)} days ago)"
+
 
 async def store_session_turn(
     session_id: uuid.UUID,
@@ -199,8 +232,11 @@ async def build_session_context(
         parts.append("[Relevant past exchanges]\n" + "\n".join(relevant_turns))
 
     if recent_messages:
+        now = datetime.now(tz=UTC)
         lines = [
-            f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}" for m in recent_messages
+            f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}"
+            f"{_elapsed_note(m.created_at, now)}"
+            for m in recent_messages
         ]
         parts.append("[Recent messages]\n" + "\n".join(lines))
 
