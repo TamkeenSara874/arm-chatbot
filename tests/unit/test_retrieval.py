@@ -328,11 +328,29 @@ class TestBuildRetrievalParams:
         # is answered exactly via direct SQL regardless of top_k, but the
         # sub_queries half needs the same wide evidence pool an improvement
         # query gets. Confirmed live that needs_aggregation isn't reliably set
-        # true by the model for these compound questions.
+        # true by the model for these compound questions. This is one specific
+        # instance of the general bool(sub_queries) rule tested below.
         decomposed = DecomposedQuery(
             intent="count_query",
             needs_aggregation=False,
             sub_queries=["What are the most common complaints?"],
+        )
+        params = build_retrieval_params(decomposed)
+        assert params.top_k == 20
+        assert params.is_aggregation is True
+
+    def test_any_compound_question_forces_top_k_20_regardless_of_intent(self) -> None:
+        # The widening rule checks bool(sub_queries) directly rather than
+        # enumerating specific intents, so a compound sentiment_overview
+        # question ("what % of my reviews are negative and how worried
+        # should I be") gets the same wide evidence pool for its reasoning
+        # half as a compound count_query does -- without needing its own
+        # special case here.
+        decomposed = DecomposedQuery(
+            intent="sentiment_overview",
+            needs_aggregation=False,
+            wants_overall_stats=True,
+            sub_queries=["How worried should I be?"],
         )
         params = build_retrieval_params(decomposed)
         assert params.top_k == 20

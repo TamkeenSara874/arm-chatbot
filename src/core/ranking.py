@@ -162,6 +162,7 @@ def rank_results(
             sentiment=result.payload.get("sentiment_label"),
             sentiment_conflict=not result.payload.get("sentiment_rating_agree", True),
             date_inferred=result.payload.get("date_inferred", False),
+            review_date=_format_date(_parse_date(result.payload.get("review_date"))),
             relevance=result.score,
         )
         for _, result in top
@@ -189,3 +190,8 @@ def _parse_date(value: object) -> datetime | None:
         except ValueError:
             return None
     return None
+
+
+def _format_date(dt: datetime | None) -> str | None:
+    """Plain YYYY-MM-DD for EvidenceItem.review_date, or None if unparseable."""
+    return dt.strftime("%Y-%m-%d") if dt else None

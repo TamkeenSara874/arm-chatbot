@@ -16,12 +16,12 @@ from src.core.session import (
 from src.utils.token_budget import estimate_tokens
 
 
-def _make_message(role: str, content: str) -> MagicMock:
+def _make_message(role: str, content: str, created_at: datetime | None = None) -> MagicMock:
     msg = MagicMock()
     msg.role = role
     msg.content = content
     msg.session_id = uuid.uuid4()
-    msg.created_at = datetime.now(tz=UTC)
+    msg.created_at = created_at or datetime.now(tz=UTC)
     return msg
 
 
@@ -129,6 +129,47 @@ class TestBuildSessionContext:
             embedder=embedder,
         )
         assert "biryani is highly praised" in result
+
+    @pytest.mark.asyncio
+    async def test_fresh_recent_message_has_no_elapsed_note(self) -> None:
+        messages = [_make_message("user", "What is your best dish?")]
+        db = _make_db_session(messages=messages)
+        embedder = _make_embedder()
+        store = _make_vector_store()
+        result = await build_session_context(
+            session_id=uuid.uuid4(),
+            restaurant_id=1,
+            current_query="Tell me more",
+            db_session=db,
+            vector_store=store,
+            embedder=embedder,
+        )
+        assert "ago)" not in result
+
+    @pytest.mark.asyncio
+    async def test_stale_same_session_message_gets_elapsed_note(self) -> None:
+        # Regression test: a real live bug had a same-session turn from over
+        # an hour earlier ("...how worried should I be?") blended into the
+        # answer to a brand new, unrelated question ("what the overall rating
+        # of my restaurant"), because nothing signaled that turn was stale --
+        # only cross-session turns got an age label. An hour-old turn in the
+        # SAME session now gets one too.
+        from datetime import timedelta
+
+        old_time = datetime.now(tz=UTC) - timedelta(hours=2)
+        messages = [_make_message("user", "How worried should I be?", created_at=old_time)]
+        db = _make_db_session(messages=messages)
+        embedder = _make_embedder()
+        store = _make_vector_store()
+        result = await build_session_context(
+            session_id=uuid.uuid4(),
+            restaurant_id=1,
+            current_query="What is my overall rating?",
+            db_session=db,
+            vector_store=store,
+            embedder=embedder,
+        )
+        assert "hours ago)" in result
 
     @pytest.mark.asyncio
     async def test_summary_prepended_when_present(self) -> None:

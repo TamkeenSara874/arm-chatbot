@@ -171,24 +171,56 @@ class RotatingGroqClient(BaseLLMClient):
         temperature: float = 0.3,
         usage_callback: UsageCallback | None = None,
     ) -> BaseModelT:
-        async def _call(client: AsyncGroq) -> BaseModelT:
-            response = await client.chat.completions.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            raw = response.choices[0].message.content or "{}"
-            if usage_callback and response.usage:
-                # Groq's usage payload has no prompt-caching signal.
-                usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens, 0)
-            return response_format.model_validate_json(raw)
+        # Deliberately returns the raw string from _call rather than parsing
+        # it into response_format inside _call -- _call runs inside
+        # _call_with_rotation's circuit-breaker-guarded retry/rotation loop,
+        # so a schema ValidationError raised in there previously got treated
+        # exactly like a real per-key failure (tripping that key's circuit
+        # breaker, rotating to the next key). But a malformed/null field in
+        # the model's JSON output says nothing about whether the API key or
+        # transport is healthy -- confirmed live as a real bug: Groq
+        # (temperature=0.0) deterministically returned "rephrased_query":
+        # null for one specific prompt, and rotating to a different key
+        # reproduced the identical validation failure every time, cycling
+        # through all 8 keys (each several seconds) before ever reaching
+        # decompose_query()'s own corrective retry. Parsing here instead,
+        # after a key has already successfully returned *some* response,
+        # means a validation failure propagates directly to the caller once
+        # -- which is exactly what decompose_query()'s own retry-with-the-
+        # error-appended logic is designed to handle -- without misattributing
+        # it to key health or wasting time rotating through every other key.
+        raw = await self._call_with_rotation(
+            lambda client: self._fetch_raw(
+                client, system, prompt, max_tokens, temperature, usage_callback
+            ),
+            label="complete_structured",
+        )
+        return response_format.model_validate_json(raw)
 
-        return await self._call_with_rotation(_call, label="complete_structured")
+    async def _fetch_raw(
+        self,
+        client: AsyncGroq,
+        system: str,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        usage_callback: UsageCallback | None,
+    ) -> str:
+        response = await client.chat.completions.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        raw = response.choices[0].message.content or "{}"
+        if usage_callback and response.usage:
+            # Groq's usage payload has no prompt-caching signal.
+            usage_callback(response.usage.prompt_tokens, response.usage.completion_tokens, 0)
+        return raw
 
     async def stream(
         self,

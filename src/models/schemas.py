@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class EvidenceItem(BaseModel):
@@ -19,6 +19,15 @@ class EvidenceItem(BaseModel):
     sentiment: str | None = None
     sentiment_conflict: bool = False
     date_inferred: bool = False
+    # Per-review date, exposed per evidence item -- not just the aggregate
+    # staleness_caveat, which only fires when the MAJORITY of evidence is
+    # old. A single old review can still be the one basis for naming a
+    # specific person (staff or reviewer) once REVIEWER/STAFF NAME PRIVACY
+    # allows real names through on request -- without the individual date,
+    # the owner has no way to tell "customers love Sam" apart from "one
+    # customer loved Sam, two years ago" before acting on it (e.g. firing
+    # someone over a single stale complaint).
+    review_date: str | None = None
     relevance: float = 0.0
 
 
@@ -107,6 +116,79 @@ class DecomposedQuery(BaseModel):
     # unfiltered total count whenever a count_query landed on this kind of
     # question, presenting the wrong number as an exact fact.
     content_filter: Literal["has_text", "no_text"] | None = None
+    # Set when the question asks about the restaurant's overall rating,
+    # overall sentiment, or what percentage/proportion of reviews are
+    # positive/negative/neutral/mixed -- triggers a direct SQL average-rating
+    # + sentiment-count computation instead of estimating either figure from
+    # only the top_k retrieved evidence sample. Deliberately independent of
+    # `intent` (like breakdown_dimension/compare_date_filter/content_filter
+    # above, and unlike the intent-gated count_query path): a compound
+    # question ("what % of my reviews are negative and how worried should I
+    # be") must not lose this signal just because the reasoning tail pulls
+    # intent classification toward aggregation/reasoning instead of
+    # sentiment_overview. Set this whenever the condition applies, regardless
+    # of whatever intent/sub_queries also get set for the rest of the question.
+    wants_overall_stats: bool = False
+    # Set when the question asks how many/what share of reviews mention a
+    # QUALITATIVE THEME that has no dedicated database column ("how many
+    # people called my staff rude", "how many reviews complain about cold
+    # food") -- a short list (2-5) of lowercase keyword/phrase variants
+    # covering the theme (e.g. ["rude", "unfriendly", "hostile"]), used to
+    # count matching reviews via full_review ILIKE across the WHOLE
+    # restaurant, not just the top_k retrieved sample. Unlike count_query
+    # (a real stored column, exact), this is a keyword-match approximation --
+    # it can undercount differently-worded mentions but scans every review,
+    # not just 20. Independent of intent, like wants_overall_stats above:
+    # still set this even if the question also asks something else
+    # (put that in sub_queries). None when the question isn't asking to
+    # count a qualitative theme.
+    theme_keywords: list[str] | None = None
+    # Set alongside theme_keywords for a question comparing TWO qualitative
+    # themes ("which has more complaints: food quality or staff behavior, and
+    # by how much?") -- mirrors compare_date_filter sitting alongside
+    # date_filter for the same reason: theme_keywords holds the first theme's
+    # keywords (e.g. ["rude", "unfriendly", "inattentive"] for staff), this
+    # holds the second (e.g. ["bland", "cold food", "undercooked"] for food
+    # quality), so both get an exact full-corpus count instead of the model
+    # eyeballing which appears more often in only the top_k retrieved sample.
+    # None for a single-theme count question.
+    compare_theme_keywords: list[str] | None = None
+    # Set alongside theme_keywords and compare_theme_keywords when the
+    # question asks how many reviews mention BOTH themes TOGETHER in the same
+    # review ("which reviews mention both slow service and cold food?", "how
+    # many complain about slow service AND cold food at once?") -- as opposed
+    # to comparing which theme is more common overall (the default meaning of
+    # setting both keyword lists without this flag). Confirmed live as a real
+    # bug: with no way to express "both together," decomposition folded both
+    # themes into one flat OR-matched list, so the exact count reported "any
+    # review mentioning slow service OR cold food" while being worded as if it
+    # meant "both at once" -- directly contradicting the model's own read of
+    # the actual retrieved evidence, which found no review mentioning both.
+    # False (the default) keeps the existing side-by-side comparison meaning.
+    theme_require_both: bool = False
+
+    # Groq's JSON-mode output (llama-3.3-70b, temperature=0.0) was confirmed
+    # live to occasionally emit `null` for a field whose schema default is ""
+    # or [] rather than actually omitting the key -- e.g. "rephrased_query":
+    # null -- which fails Pydantic validation on a plain `str`/`list[str]`
+    # field. Since temperature=0.0 makes this deterministic for a given
+    # prompt, retrying the identical request against a different Groq API
+    # key (RotatingGroqClient's rotation-on-failure) reproduced the exact
+    # same failure on every single key, wastefully cycling through all of
+    # them (each taking several seconds) before decompose_query()'s own
+    # corrective retry ever got a chance to run -- confirmed live as a
+    # 30-50+ second latency spike. Coercing these three fields' `None` to
+    # their normal empty default here means that particular model quirk
+    # never reaches Pydantic as a validation failure at all.
+    @field_validator("rephrased_query", mode="before")
+    @classmethod
+    def _none_to_empty_string(cls, v: str | None) -> str:
+        return v or ""
+
+    @field_validator("entities", "sub_queries", mode="before")
+    @classmethod
+    def _none_to_empty_list(cls, v: list[str] | None) -> list[str]:
+        return v or []
 
 
 # Request / response schemas for the API
@@ -145,6 +227,11 @@ class ChatQueryRequest(BaseModel):
     session_id: uuid.UUID
     restaurant_id: int
     message: str = Field(..., min_length=1, max_length=2000)
+    # Set by the frontend's "Regenerate" action -- skips both cache lookups
+    # (exact-text and semantic) so a regenerate actually re-runs the pipeline
+    # instead of serving back the same cached answer it's trying to replace.
+    # Does not affect writing the fresh response to cache afterward.
+    bypass_cache: bool = False
 
 
 class ChatQueryResponse(BaseModel):

@@ -5,9 +5,14 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 from groq import RateLimitError
+from pydantic import BaseModel, ValidationError
 
 from src.services.llm.base import AllModelsFailedError
 from src.services.llm.groq_rotation import RotatingGroqClient, _parse_retry_after
+
+
+class _Schema(BaseModel):
+    rephrased_query: str = ""
 
 
 def _rate_limit_error(message: str = "Error code: 429 - rate limit reached.") -> RateLimitError:
@@ -119,6 +124,43 @@ class TestRotatingGroqClient:
         await client.complete("prompt", usage_callback=callback)
 
         callback.assert_called_once_with(100, 20, 0)
+
+    @pytest.mark.asyncio
+    async def test_structured_validation_failure_does_not_rotate_keys(self) -> None:
+        # Regression test: a real live bug had Groq (temperature=0.0)
+        # deterministically return a malformed field (e.g. "rephrased_query":
+        # null) for one specific prompt. Since the same prompt against a
+        # different key produces the identical failure, complete_structured()
+        # must not treat a schema ValidationError as "this key is unhealthy"
+        # and rotate to the next one -- that just wastes several seconds per
+        # key for a failure no key rotation can ever fix. Parsing now happens
+        # outside the circuit-breaker/rotation loop, so only key1 should ever
+        # be called, and the ValidationError should propagate directly.
+        client = RotatingGroqClient(api_keys=["key1", "key2"], model="llama-3.3-70b-versatile")
+        client._clients[0].chat.completions.create = AsyncMock(
+            return_value=_mock_completion('{"rephrased_query": null}')
+        )
+        client._clients[1].chat.completions.create = AsyncMock(
+            return_value=_mock_completion('{"rephrased_query": "fine"}')
+        )
+
+        with pytest.raises(ValidationError):
+            await client.complete_structured("prompt", system="sys", response_format=_Schema)
+
+        client._clients[0].chat.completions.create.assert_awaited_once()
+        client._clients[1].chat.completions.create.assert_not_awaited()
+        assert 0 not in client._cooldown_until
+
+    @pytest.mark.asyncio
+    async def test_structured_success_parses_response(self) -> None:
+        client = RotatingGroqClient(api_keys=["key1"], model="llama-3.3-70b-versatile")
+        client._clients[0].chat.completions.create = AsyncMock(
+            return_value=_mock_completion('{"rephrased_query": "hello"}')
+        )
+
+        result = await client.complete_structured("prompt", system="sys", response_format=_Schema)
+
+        assert result.rephrased_query == "hello"
 
     @pytest.mark.asyncio
     async def test_stream_not_implemented(self) -> None:

@@ -27,6 +27,7 @@ def _evidence_item(
     sentiment: str | None = "Positive",
     date_inferred: bool = False,
     username: str | None = None,
+    review_date: str | None = None,
 ) -> EvidenceItem:
     return EvidenceItem(
         snippet="great food",
@@ -36,6 +37,7 @@ def _evidence_item(
         sentiment=sentiment,
         sentiment_conflict=sentiment_conflict,
         date_inferred=date_inferred,
+        review_date=review_date,
         relevance=relevance,
     )
 
@@ -81,6 +83,19 @@ class TestFormatEvidence:
     def test_date_inferred_flag_included(self) -> None:
         result = format_evidence([_evidence_item(date_inferred=True)])
         assert "[date_inferred: true]" in result
+
+    def test_includes_review_date_when_present(self) -> None:
+        # Regression coverage: naming a specific person (staff or reviewer)
+        # based on a review needs its date visible per-item, not just the
+        # aggregate staleness_caveat -- a single old review is a very
+        # different basis for a real decision (e.g. firing someone) than a
+        # recent, repeated pattern, and the model can't say so without this.
+        result = format_evidence([_evidence_item(review_date="2024-03-15")])
+        assert "Date: 2024-03-15" in result
+
+    def test_omits_date_field_when_absent(self) -> None:
+        result = format_evidence([_evidence_item(review_date=None)])
+        assert "Date:" not in result
 
     def test_empty_list_returns_placeholder(self) -> None:
         assert format_evidence([]) == "No review evidence found."
