@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from src.config import Settings
+from src.core.chunking import _sentence_split
+from src.core.reranker import score_for_highlight
 from src.models.schemas import EvidenceItem
 from src.services.vector.base import SearchResult
 
@@ -62,13 +65,16 @@ def reciprocal_rank_fusion(
     return scores
 
 
-def rank_results(
+async def rank_results(
     fused_results: list[SearchResult],
     settings: Settings,
     today: datetime | None = None,
     top_k: int = 6,
     staleness_days: int | None = None,
     has_explicit_date_filter: bool = False,
+    query: str | None = None,
+    reranker_model: str | None = None,
+    reranked: bool = True,
 ) -> RankingResult:
     """Apply composite scoring and return ranked evidence with diagnostics.
 
@@ -79,6 +85,11 @@ def rank_results(
     where effective_rating is sentiment-mapped when text sentiment and star rating disagree.
     The w_rrf weight name is historical (it used to weight an RRF score); it
     now weights the reranker's relevance score.
+
+    When query and reranker_model are both given, each evidence item's
+    highlight is set to whichever of its sentences the cross-encoder scores
+    highest against query (see _add_highlights). Omit either to skip
+    highlighting -- e.g. when no reranker_model is configured.
     """
     if today is None:
         today = datetime.now(tz=UTC)
@@ -164,9 +175,13 @@ def rank_results(
             date_inferred=result.payload.get("date_inferred", False),
             review_date=_format_date(_parse_date(result.payload.get("review_date"))),
             relevance=result.score,
+            relevance_calibrated=reranked,
         )
         for _, result in top
     ]
+
+    if query is not None and reranker_model is not None:
+        await _add_highlights(evidence, query, reranker_model)
 
     return RankingResult(
         evidence=evidence,
@@ -176,6 +191,85 @@ def rank_results(
         staleness_caveat=staleness_caveat,
         low_evidence=low_evidence,
     )
+
+
+async def _add_highlights(
+    evidence: list[EvidenceItem],
+    query: str,
+    reranker_model: str,
+) -> None:
+    """Set .highlight on each item to its highest cross-encoder-scored sentence.
+
+    Splits each snippet into sentences (same splitter chunking.py uses) and
+    scores all of them against query in one batched call via the already-warm
+    local reranker model -- no network I/O, unlike the OpenAI-embedding
+    approach this replaced (measured at 2-7s/request on real evidence sets).
+    """
+    per_item_sentences: list[list[str]] = []
+    all_sentences: list[str] = []
+    for item in evidence:
+        sentences = _split_into_highlight_candidates(item.snippet)
+        per_item_sentences.append(sentences)
+        if len(sentences) > 1:
+            all_sentences.extend(sentences)
+
+    if not all_sentences:
+        return
+
+    scores = await score_for_highlight(query, all_sentences, reranker_model)
+    if not scores:
+        return
+    scores_by_sentence = dict(zip(all_sentences, scores, strict=True))
+
+    for item, sentences in zip(evidence, per_item_sentences, strict=True):
+        if len(sentences) <= 1:
+            continue
+        item.highlight = max(sentences, key=lambda s: scores_by_sentence[s])
+
+
+_ELLIPSIS_RE = re.compile(r"(?<=\.\.\.)\s+|(?<=…)\s+")
+
+
+def _split_into_highlight_candidates(text: str) -> list[str]:
+    """Sentence-split for highlight scoring, then repair the two failure
+    modes confirmed live on real, informal review text:
+
+    - An ellipsis ("...") inside a real NLTK sentence boundary doesn't
+      reliably end it, so several genuinely separate thoughts (e.g. "...we
+      spoke to the hostess... she said... (true story)") get glued into one
+      oversized "sentence" -- split further on internal ellipses.
+    - A run-on/comma-spliced sentence can get cut in the wrong place by NLTK
+      itself, leaving an orphaned fragment that starts mid-thought (a real
+      sentence should start capitalized) -- merge it back into the previous
+      piece rather than let it be selected and shown incomplete. This check
+      only applies to NLTK's own sentence boundaries, not ours: text
+      continuing after "..." is normally lowercase as a stylistic
+      trail-off, not a broken cut, so applying the same check there would
+      immediately undo the ellipsis split above -- confirmed live as a real
+      bug in an earlier version of this function. A short-but-complete
+      sentence ("Very well.", "Service was excellent.") is common in review
+      text and deliberately left alone -- length alone isn't a fragment
+      signal, only an unexpected lowercase start is.
+    """
+    pieces: list[tuple[str, bool]] = []
+    for sentence in _sentence_split(text):
+        sub_pieces = [p for p in _ELLIPSIS_RE.split(sentence) if p.strip()]
+        pieces.extend((p, i > 0) for i, p in enumerate(sub_pieces))
+
+    if not pieces:
+        return []
+
+    merged = [pieces[0][0]]
+    for piece, from_ellipsis_split in pieces[1:]:
+        stripped = piece.strip()
+        broken_nltk_cut = (
+            not from_ellipsis_split and stripped and stripped[0].islower()
+        )
+        if broken_nltk_cut:
+            merged[-1] = f"{merged[-1]} {piece}"
+        else:
+            merged.append(piece)
+    return merged
 
 
 def _parse_date(value: object) -> datetime | None:

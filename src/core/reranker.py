@@ -14,6 +14,8 @@ from src.services.vector.base import SearchResult
 if TYPE_CHECKING:
     from sentence_transformers import CrossEncoder
 
+    from src.core.retrieval import RetrievalTiming
+
 logger = structlog.get_logger()
 
 # Sibling files export_dynamic_quantized_onnx_model() does NOT copy into the
@@ -181,11 +183,54 @@ async def load_reranker(model_name: str) -> CrossEncoder:
         return model
 
 
+async def _predict_raw(query: str, texts: list[str], model_name: str) -> list[float]:
+    """Raw (pre-sigmoid) cross-encoder logits for (query, text) pairs.
+
+    Shared by rerank() and score_for_highlight() so both reuse the same
+    warm, local model and thread-executor dispatch -- no network I/O either
+    way, unlike the OpenAI-embedding approach highlighting used previously.
+    """
+    from src.config import get_settings
+
+    model = await load_reranker(model_name)
+    pairs = [(query, t) for t in texts]
+    batch_size = get_settings().reranker_batch_size
+    loop = asyncio.get_event_loop()
+    raw_scores: list[float] = await loop.run_in_executor(
+        None, functools.partial(model.predict, pairs, batch_size=batch_size)
+    )
+    return raw_scores
+
+
+async def score_for_highlight(query: str, sentences: list[str], model_name: str) -> list[float]:
+    """Sigmoid-normalized cross-encoder relevance scores for (query, sentence) pairs.
+
+    Used by ranking.py to pick which sentence within a review snippet to
+    highlight. Reuses rerank()'s already-warm local model instead of a fresh
+    OpenAI embedding call -- measured at 2-7s/request on real evidence sets
+    before this change, since that call is a real network round-trip; this
+    is local CPU inference with no I/O. Unlike rerank(), there's no
+    degenerate-spread fallback: a flat/unhelpful score still just picks
+    *some* sentence rather than corrupting a whole candidate ranking, so
+    there's nothing worth falling back from. Returns [] (no highlight) if
+    the model itself fails to load or predict.
+    """
+    if not sentences:
+        return []
+    try:
+        raw_scores = await _predict_raw(query, sentences, model_name)
+    except Exception as exc:
+        logger.warning("highlight_scoring_failed", error=str(exc))
+        return []
+    return [_sigmoid(float(s)) for s in raw_scores]
+
+
 async def rerank(
     query: str,
     results: list[SearchResult],
     model_name: str,
     top_k: int | None = None,
+    timing: RetrievalTiming | None = None,
 ) -> list[SearchResult]:
     """Score (query, chunk) pairs with a cross-encoder and return top_k results.
 
@@ -195,25 +240,23 @@ async def rerank(
 
     Falls back to the original RRF ordering if the model fails.
     Runs the synchronous CrossEncoder.predict() in a thread executor.
+
+    timing, if provided, has its .reranked flag set to False on either
+    fallback path below -- see RetrievalTiming's own docstring for why a
+    caller displaying relevance needs to know this.
     """
     if not results:
         return results
 
     import time
 
-    from src.config import get_settings
     from src.utils.metrics import rerank_latency
 
-    model = await load_reranker(model_name)
-    pairs = [(query, r.payload.get("text", "")) for r in results]
-    batch_size = get_settings().reranker_batch_size
+    texts = [r.payload.get("text", "") for r in results]
 
     try:
         t0 = time.perf_counter()
-        loop = asyncio.get_event_loop()
-        raw_scores: list[float] = await loop.run_in_executor(
-            None, functools.partial(model.predict, pairs, batch_size=batch_size)
-        )
+        raw_scores = await _predict_raw(query, texts, model_name)
         elapsed = time.perf_counter() - t0
         rerank_latency.observe(elapsed)
         logger.debug(
@@ -223,6 +266,8 @@ async def rerank(
         )
     except Exception as exc:
         logger.warning("reranker_failed_falling_back_to_rrf_order", error=str(exc))
+        if timing is not None:
+            timing.reranked = False
         return results[:top_k] if top_k else results
 
     # A single candidate trivially has zero spread -- that's not the model
@@ -239,6 +284,8 @@ async def rerank(
             spread=round(float(spread), 3),
             candidates=len(results),
         )
+        if timing is not None:
+            timing.reranked = False
         return results[:top_k] if top_k else results
 
     reranked = [

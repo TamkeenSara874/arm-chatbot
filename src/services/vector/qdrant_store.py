@@ -9,6 +9,7 @@ from qdrant_client.http.models import (
     Filter,
     Fusion,
     FusionQuery,
+    MatchAny,
     MatchValue,
     PointStruct,
     Prefetch,
@@ -255,5 +256,10 @@ class QdrantStore(BaseVectorStore):
             rating_kwargs["lte"] = float(filters["rating_max"])
         if rating_kwargs:
             conditions.append(FieldCondition(key="rating", range=Range(**rating_kwargs)))
+
+        if filters.get("source_filter"):
+            conditions.append(
+                FieldCondition(key="source", match=MatchAny(any=filters["source_filter"]))
+            )
 
         return Filter(must=conditions) if conditions else None

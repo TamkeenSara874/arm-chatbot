@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.core.decomposition import decompose_query
+from src.models.schemas import DecomposedQuery
 
 
 def _make_client(responses: list[str]) -> MagicMock:
@@ -128,3 +129,37 @@ async def test_null_rephrased_query_does_not_raise() -> None:
     assert result.entities == []
     assert result.sub_queries == []
     assert client.complete_structured.call_count == 1
+
+
+class TestSourceFilterValidation:
+    def test_none_becomes_empty_list(self) -> None:
+        result = DecomposedQuery(intent="factual", source_filter=None)
+        assert result.source_filter == []
+
+    def test_bare_string_wrapped_in_list(self) -> None:
+        # Defensive coercion for a model that ignores the array instruction
+        # and returns a single platform name as a plain string.
+        result = DecomposedQuery(intent="factual", source_filter="Google")
+        assert result.source_filter == ["Google"]
+
+    def test_list_passed_through_unchanged(self) -> None:
+        result = DecomposedQuery(intent="comparison", source_filter=["Yelp", "Google"])
+        assert result.source_filter == ["Yelp", "Google"]
+
+    def test_omitted_field_defaults_to_empty_list(self) -> None:
+        result = DecomposedQuery(intent="factual")
+        assert result.source_filter == []
+
+    def test_wrong_case_normalized_to_canonical_storage_casing(self) -> None:
+        # Regression coverage: confirmed live that the decomposition model
+        # returns "Opentable" (matching how the user typed it) rather than
+        # "OpenTable" (how it's actually stored) -- Qdrant's filter match is
+        # case-exact, so this silently matched zero real reviews while
+        # "Google" in the same list kept matching, making the whole evidence
+        # panel look like the filter had never been applied at all.
+        result = DecomposedQuery(intent="comparison", source_filter=["Opentable", "GOOGLE"])
+        assert result.source_filter == ["OpenTable", "Google"]
+
+    def test_unrecognized_source_name_dropped(self) -> None:
+        result = DecomposedQuery(intent="comparison", source_filter=["Google", "Facebook"])
+        assert result.source_filter == ["Google"]

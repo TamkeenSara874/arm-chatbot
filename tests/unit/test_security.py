@@ -146,7 +146,7 @@ class TestChatQueryRequestValidation:
 class TestInjectionPenaltyInRanking:
     """Verify that injection-flagged chunks score lower in the ranking pipeline."""
 
-    def test_injected_chunk_ranks_below_clean_chunk(self) -> None:
+    async def test_injected_chunk_ranks_below_clean_chunk(self) -> None:
         from datetime import datetime, timedelta
         from unittest.mock import MagicMock
 
@@ -187,7 +187,7 @@ class TestInjectionPenaltyInRanking:
         clean = make("clean", injected=False)
         flagged = make("flagged", injected=True)
 
-        ranking = rank_results([clean, flagged], settings, top_k=2)
+        ranking = await rank_results([clean, flagged], settings, top_k=2)
 
         snippets = [e.snippet for e in ranking.evidence]
         assert snippets.index(clean.payload["text"]) < snippets.index(flagged.payload["text"]), (

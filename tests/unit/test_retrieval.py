@@ -400,3 +400,13 @@ class TestBuildRetrievalParams:
         params = build_retrieval_params(decomposed)
         assert params.rating_min == 3.0
         assert params.rating_max == 5.0
+
+    def test_source_filter_passed_through(self) -> None:
+        decomposed = DecomposedQuery(intent="comparison", source_filter=["Yelp", "Google"])
+        params = build_retrieval_params(decomposed)
+        assert params.source_filter == ["Yelp", "Google"]
+
+    def test_empty_source_filter_becomes_none(self) -> None:
+        decomposed = DecomposedQuery(intent="factual", source_filter=[])
+        params = build_retrieval_params(decomposed)
+        assert params.source_filter is None

@@ -1197,6 +1197,7 @@ async def _pipeline_stream(
             date_to=params.date_to,
             rating_min=params.rating_min,
             rating_max=params.rating_max,
+            source_filter=params.source_filter,
             reranker_model=settings_.reranker_model,
             precomputed_dense_vector=precomputed_query_vector,
             timing=retrieval_timing,
@@ -1215,11 +1216,14 @@ async def _pipeline_stream(
         # for every result), which is what made EvidencePanel's "match %"
         # badge and _estimate_confidence()'s avg_relevance both useless.
         t1 = time.perf_counter()
-        ranked = rank_results(
+        ranked = await rank_results(
             results,
             settings_,
             top_k=params.top_k,
             has_explicit_date_filter=bool(decomposed.date_filter),
+            query=retrieval_query,
+            reranker_model=settings_.reranker_model,
+            reranked=retrieval_timing.reranked,
         )
         trace.ranking_ms = (time.perf_counter() - t1) * 1000.0
         trace.evidence_count = len(ranked.evidence)
