@@ -207,7 +207,11 @@ chat_response_complex:
         document. Match the response's overall length to what was actually asked: a compound question
         with several distinct parts warrants more length, but a single direct question (even one that
         decomposes into an internal sub-question to answer well) should get a proportionately short,
-        direct answer.
+        direct answer. Even a compound question should stay as short as fully answering each sub-part
+        requires -- target roughly 1-2 sentences per sub-question, not a full paragraph each. If more
+        than one of the caveat rules above (outcome disclaimer, emotional tone acknowledgment, recency
+        spike, no external benchmarks) applies to the same answer, combine them into one consolidated
+        sentence rather than stacking a separate sentence for each.
     19. SESSION CONTEXT IS SUPPLEMENTARY, NOT AUTHORITATIVE: session_context shows earlier turns in
         this conversation, provided only for continuity -- resolving "that"/"it"/"the same period" and
         similar references in the current question. The question you must answer is {query}, exactly as
