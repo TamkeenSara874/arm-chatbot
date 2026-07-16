@@ -22,14 +22,19 @@ async def find_cached_response(
     redis_cache: RedisCache,
     collection: str,
     threshold: float = 0.95,
+    precomputed_vector: list[float] | None = None,
 ) -> tuple[dict[str, Any] | None, list[float]]:
     """Look up a semantically similar cached response for this (decomposed) query.
 
     Returns (value, query_vector) -- the vector is returned so callers can reuse
     it for retrieval on a miss instead of embedding the same text twice.
+
+    precomputed_vector lets a caller that already embedded this exact query
+    text (e.g. because it equals the raw sanitized message, already embedded
+    for session-context lookup) skip a second, redundant embedding call.
     """
     try:
-        vector = await embedder.embed_one(query)
+        vector = precomputed_vector if precomputed_vector is not None else await embedder.embed_one(query)
     except Exception as exc:
         logger.warning("semantic_cache_embed_failed", error=str(exc))
         return None, []
