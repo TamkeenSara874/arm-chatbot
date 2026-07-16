@@ -289,9 +289,7 @@ class TestRerank:
             mock_model = MagicMock()
             mock_model.predict = MagicMock(side_effect=RuntimeError("GPU OOM"))
             mock_load.return_value = mock_model
-            ranked = await rerank(
-                "query", results, model_name="mock-model", top_k=2, timing=timing
-            )
+            ranked = await rerank("query", results, model_name="mock-model", top_k=2, timing=timing)
         assert [r.id for r in ranked] == ["first", "second"]
         assert timing.reranked is False, "Caller must know these scores aren't calibrated"
 

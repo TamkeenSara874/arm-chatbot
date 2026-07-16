@@ -34,7 +34,11 @@ async def find_cached_response(
     for session-context lookup) skip a second, redundant embedding call.
     """
     try:
-        vector = precomputed_vector if precomputed_vector is not None else await embedder.embed_one(query)
+        vector = (
+            precomputed_vector
+            if precomputed_vector is not None
+            else await embedder.embed_one(query)
+        )
     except Exception as exc:
         logger.warning("semantic_cache_embed_failed", error=str(exc))
         return None, []

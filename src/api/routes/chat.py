@@ -1312,9 +1312,7 @@ async def _pipeline_stream(
                 threshold=settings_.correction_sim_threshold,
                 precomputed_vector=sanitized_vector,
             )
-            session_context = (
-                await session_context_task if session_context_task is not None else ""
-            )
+            session_context = await session_context_task if session_context_task is not None else ""
             confirmed_correction = "None"
             unverified_note = "None"
             if correction_match is not None:

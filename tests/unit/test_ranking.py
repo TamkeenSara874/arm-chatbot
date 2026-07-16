@@ -19,7 +19,9 @@ _KNOWN_SCORES = {
 }
 
 
-async def _fake_score_for_highlight(query: str, sentences: list[str], model_name: str) -> list[float]:
+async def _fake_score_for_highlight(
+    query: str, sentences: list[str], model_name: str
+) -> list[float]:
     return [_KNOWN_SCORES.get(s, 0.5) for s in sentences]
 
 
@@ -272,7 +274,7 @@ class TestSplitIntoHighlightCandidates:
         # getting glued into one oversized highlight candidate.
         text = (
             "Your Google says you're open till 10pm... we spoke to the "
-            'hostess at 8:31, she said with a literal straight face, '
+            "hostess at 8:31, she said with a literal straight face, "
             '"we stop seating at 8:30".. (true story)'
         )
         pieces = _split_into_highlight_candidates(text)

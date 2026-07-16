@@ -262,9 +262,7 @@ def _split_into_highlight_candidates(text: str) -> list[str]:
     merged = [pieces[0][0]]
     for piece, from_ellipsis_split in pieces[1:]:
         stripped = piece.strip()
-        broken_nltk_cut = (
-            not from_ellipsis_split and stripped and stripped[0].islower()
-        )
+        broken_nltk_cut = not from_ellipsis_split and stripped and stripped[0].islower()
         if broken_nltk_cut:
             merged[-1] = f"{merged[-1]} {piece}"
         else:
