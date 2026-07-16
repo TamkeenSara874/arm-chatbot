@@ -31,26 +31,43 @@ function Stars({ rating }: { rating: number }) {
   );
 }
 
+function SnippetText({ snippet, highlight }: { snippet: string; highlight?: string | null }) {
+  if (!highlight) return <>{snippet}</>;
+
+  const start = snippet.indexOf(highlight);
+  if (start === -1) return <>{snippet}</>;
+
+  const end = start + highlight.length;
+  return (
+    <>
+      {snippet.slice(0, start)}
+      <mark className="rounded bg-amber-200/60 px-0.5 text-inherit">{snippet.slice(start, end)}</mark>
+      {snippet.slice(end)}
+    </>
+  );
+}
+
 function EvidenceCard({
   item,
   index,
-  matchPercent,
 }: {
   item: EvidenceItem;
   index: number;
-  matchPercent: number;
 }) {
   const sentimentStyle = item.sentiment ? SENTIMENT_STYLES[item.sentiment] ?? SENTIMENT_STYLES.Neutral : SENTIMENT_STYLES.Neutral;
   const sourceStyle = item.source ? SOURCE_STYLES[item.source] ?? 'bg-gray-100 text-gray-600' : '';
+  const { text: matchText, className: matchClassName } = matchLabel(item);
 
   return (
     <div className="rounded-lg border border-gray-100 bg-white p-3 shadow-sm">
       <div className="mb-2 flex items-start justify-between gap-2">
         <span className="text-xs font-semibold text-gray-400">#{index + 1}</span>
-        <span className="text-xs font-medium text-aio-500">{matchPercent}% match</span>
+        <span className={`text-xs font-medium ${matchClassName}`}>{matchText}</span>
       </div>
 
-      <p className="mb-3 text-sm leading-relaxed text-gray-700">{item.snippet}</p>
+      <p className="mb-3 text-sm leading-relaxed text-gray-700">
+        <SnippetText snippet={item.snippet} highlight={item.highlight} />
+      </p>
 
       <div className="flex flex-wrap items-center gap-1.5">
         {item.rating != null && <Stars rating={item.rating} />}
@@ -91,25 +108,27 @@ function EvidenceCard({
   );
 }
 
-// Cross-encoder relevance scores are calibrated to be confidently near-0 or
-// near-1 (trained as a direct question/passage classifier), not a smooth
-// gradient -- a correctly-ranked-but-compressed evidence set (e.g. every raw
-// score under 1%) would otherwise show a wall of "0% match" badges even
-// though the ordering itself is meaningful. Min-max normalizing within this
-// response's own evidence set surfaces that relative ordering: the best
-// piece of evidence shown reads as ~100%, the weakest as ~0%, everything
-// else scaled proportionally between.
-function matchPercentages(evidence: EvidenceItem[]): number[] {
-  if (evidence.length === 0) return [];
-  const relevances = evidence.map((e) => e.relevance);
-  const min = Math.min(...relevances);
-  const max = Math.max(...relevances);
-  const spread = max - min;
-  if (spread < 1e-9) {
-    // All equally (ir)relevant -- nothing to distinguish, show them as tied.
-    return relevances.map(() => 100);
+// Absolute thresholds, not a per-response relative rescaling: this
+// cross-encoder is trained as a direct question/passage classifier, so its
+// sigmoid output is already a calibrated 0-1 relevance probability with 0.5
+// as its own natural decision boundary. An earlier version min-max rescaled
+// within just the evidence shown (best = 100%, weakest = 0%) -- but that
+// made a genuinely weak item in an otherwise-strong set read as "0% match"
+// as if it were irrelevant, when it was simply the weakest of several good
+// ones. Fixed thresholds instead mean a weak item honestly reads as weak
+// regardless of what else is in the panel, and a strong item reads as
+// strong even if it's the only one shown.
+function matchLabel(item: EvidenceItem): { text: string; className: string } {
+  if (!item.relevance_calibrated) {
+    // Reranking failed or was skipped as degenerate -- item.relevance is the
+    // retrieval step's own fusion score here, a different scale that these
+    // thresholds don't apply to. Ordering is still meaningful, a strength
+    // claim isn't.
+    return { text: 'Retrieved', className: 'text-gray-400' };
   }
-  return relevances.map((r) => Math.round(((r - min) / spread) * 100));
+  if (item.relevance >= 0.5) return { text: 'Strong match', className: 'text-green-600' };
+  if (item.relevance >= 0.1) return { text: 'Possible match', className: 'text-amber-600' };
+  return { text: 'Weak match', className: 'text-gray-400' };
 }
 
 export function EvidencePanel() {
@@ -117,19 +136,15 @@ export function EvidencePanel() {
 
   const selected = messages.find((m) => m.id === selectedMessageId);
   const evidence: EvidenceItem[] = selected?.response?.response.evidence ?? [];
-  const percentages = matchPercentages(evidence);
 
   // The backend orders evidence by a composite score (relevance + recency +
   // rating) -- generation reasons over that order for good reason, since a
   // fresher or better-rated review can be more useful evidence than a
   // slightly-higher-relevance old one. But this panel's badge shows relevance
-  // alone, so the two can disagree (a 47% card sitting above a 100% one) --
-  // confusing for a human scanning cards top to bottom expecting the number
-  // to match the order. Re-sort purely for display; the array powering
-  // generation elsewhere is untouched.
-  const sorted = evidence
-    .map((item, originalIndex) => ({ item, percent: percentages[originalIndex] }))
-    .sort((a, b) => b.percent - a.percent);
+  // alone, so the two can disagree -- confusing for a human scanning cards
+  // top to bottom expecting the badge to match the order. Re-sort purely for
+  // display; the array powering generation elsewhere is untouched.
+  const sorted = [...evidence].sort((a, b) => b.relevance - a.relevance);
 
   return (
     <aside className="animate-slide-in fixed right-0 top-[64px] bottom-0 z-30 flex w-80 flex-col border-l border-gray-100 bg-gray-50">
@@ -152,9 +167,7 @@ export function EvidencePanel() {
         {evidence.length === 0 ? (
           <p className="py-6 text-center text-sm text-gray-400">No evidence for this response.</p>
         ) : (
-          sorted.map(({ item, percent }, i) => (
-            <EvidenceCard key={i} item={item} index={i} matchPercent={percent} />
-          ))
+          sorted.map((item, i) => <EvidenceCard key={i} item={item} index={i} />)
         )}
       </div>
     </aside>

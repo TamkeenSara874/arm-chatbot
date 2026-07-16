@@ -12,7 +12,9 @@ from src.core.reranker import (
     _sigmoid,
     load_reranker,
     rerank,
+    score_for_highlight,
 )
+from src.core.retrieval import RetrievalTiming
 from src.services.vector.base import SearchResult
 
 
@@ -282,12 +284,14 @@ class TestRerank:
     @pytest.mark.asyncio
     async def test_model_failure_falls_back_to_original_order(self) -> None:
         results = [_sr("first", 0.9), _sr("second", 0.5)]
+        timing = RetrievalTiming()
         with patch("src.core.reranker.load_reranker", new_callable=AsyncMock) as mock_load:
             mock_model = MagicMock()
             mock_model.predict = MagicMock(side_effect=RuntimeError("GPU OOM"))
             mock_load.return_value = mock_model
-            ranked = await rerank("query", results, model_name="mock-model", top_k=2)
+            ranked = await rerank("query", results, model_name="mock-model", top_k=2, timing=timing)
         assert [r.id for r in ranked] == ["first", "second"]
+        assert timing.reranked is False, "Caller must know these scores aren't calibrated"
 
     @pytest.mark.asyncio
     async def test_payload_preserved_after_rerank(self) -> None:
@@ -311,16 +315,66 @@ class TestRerank:
         # to discriminate) should keep the pre-rerank order/scores instead of a
         # meaningless wall of near-0% sigmoid scores.
         results = [_sr("first", 0.9), _sr("second", 0.5), _sr("third", 0.3)]
+        timing = RetrievalTiming()
         with patch("src.core.reranker.load_reranker", new_callable=AsyncMock) as mock_load:
             mock_model = MagicMock()
             mock_model.predict = MagicMock(return_value=[-11.44, -11.45, -11.46])
             mock_load.return_value = mock_model
             ranked = await rerank(
-                "summarize the negative reviews", results, model_name="mock-model"
+                "summarize the negative reviews",
+                results,
+                model_name="mock-model",
+                timing=timing,
             )
         assert [r.id for r in ranked] == ["first", "second", "third"]
         assert [r.score for r in ranked] == [0.9, 0.5, 0.3]
+        assert timing.reranked is False, "Caller must know these scores aren't calibrated"
 
+    @pytest.mark.asyncio
+    async def test_successful_rerank_leaves_timing_reranked_true(self) -> None:
+        results = [_sr("a", 0.5), _sr("b", 0.3)]
+        timing = RetrievalTiming()
+        with patch("src.core.reranker.load_reranker", new_callable=AsyncMock) as mock_load:
+            mock_model = MagicMock()
+            mock_model.predict = MagicMock(return_value=[-3.0, 6.0])
+            mock_load.return_value = mock_model
+            await rerank("best food?", results, model_name="mock-model", timing=timing)
+        assert timing.reranked is True
+
+
+class TestScoreForHighlight:
+    @pytest.mark.asyncio
+    async def test_returns_sigmoid_scores_for_each_sentence(self) -> None:
+        with patch("src.core.reranker.load_reranker", new_callable=AsyncMock) as mock_load:
+            mock_model = MagicMock()
+            mock_model.predict = MagicMock(return_value=[-3.0, 6.0])
+            mock_load.return_value = mock_model
+            scores = await score_for_highlight("query", ["a", "b"], "mock-model")
+        assert len(scores) == 2
+        assert all(0.0 <= s <= 1.0 for s in scores)
+        assert scores[1] > scores[0], "Higher CE logit should give a higher score"
+
+    @pytest.mark.asyncio
+    async def test_empty_sentences_returns_empty_list_without_loading_model(self) -> None:
+        with patch("src.core.reranker.load_reranker", new_callable=AsyncMock) as mock_load:
+            scores = await score_for_highlight("query", [], "mock-model")
+        mock_load.assert_not_called()
+        assert scores == []
+
+    @pytest.mark.asyncio
+    async def test_model_failure_returns_empty_list_no_highlight_not_an_error(self) -> None:
+        # Highlighting is a nice-to-have, not a hallucination-gate-relevant
+        # signal -- a model failure here should just mean "no highlight",
+        # never propagate as an exception through rank_results().
+        with patch("src.core.reranker.load_reranker", new_callable=AsyncMock) as mock_load:
+            mock_model = MagicMock()
+            mock_model.predict = MagicMock(side_effect=RuntimeError("boom"))
+            mock_load.return_value = mock_model
+            scores = await score_for_highlight("query", ["a"], "mock-model")
+        assert scores == []
+
+
+class TestRerankScoreOverridesRRF:
     @pytest.mark.asyncio
     async def test_high_ce_score_beats_high_rrf_score(self) -> None:
         rrf_winner = _sr("rrf", 0.99, "only slightly related content")

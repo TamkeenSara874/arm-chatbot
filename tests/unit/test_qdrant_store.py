@@ -16,7 +16,11 @@ import httpx
 import pytest
 from qdrant_client.http.exceptions import UnexpectedResponse
 
-from src.services.vector.qdrant_store import _create_collection_if_missing, ensure_collections
+from src.services.vector.qdrant_store import (
+    QdrantStore,
+    _create_collection_if_missing,
+    ensure_collections,
+)
 
 
 def _unexpected_response(status_code: int) -> UnexpectedResponse:
@@ -119,3 +123,24 @@ class TestEnsureCollections:
             await ensure_collections(settings)
 
         fake_client.close.assert_awaited_once()
+
+
+class TestBuildFilterSourceFilter:
+    def test_no_source_filter_means_no_source_condition(self) -> None:
+        store = QdrantStore(url="http://localhost:6333")
+        result = store._build_filter({"restaurant_id": 1})
+        keys = [c.key for c in result.must]
+        assert "source" not in keys
+
+    def test_source_filter_produces_match_any_condition(self) -> None:
+        store = QdrantStore(url="http://localhost:6333")
+        result = store._build_filter({"restaurant_id": 1, "source_filter": ["Yelp", "Google"]})
+        source_conditions = [c for c in result.must if c.key == "source"]
+        assert len(source_conditions) == 1
+        assert source_conditions[0].match.any == ["Yelp", "Google"]
+
+    def test_empty_source_filter_list_produces_no_condition(self) -> None:
+        store = QdrantStore(url="http://localhost:6333")
+        result = store._build_filter({"restaurant_id": 1, "source_filter": []})
+        keys = [c.key for c in result.must]
+        assert "source" not in keys

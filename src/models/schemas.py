@@ -6,6 +6,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+# Canonical casing exactly as stored in each review's Qdrant payload "source"
+# field -- Qdrant's MatchAny filter is case-sensitive, so a decomposition
+# output like "Opentable" (matching how a user typed it, not how it's stored)
+# would silently match zero real reviews while still matching others in the
+# same list, e.g. "Google" -- confirmed live as the cause of a source filter
+# that appeared to work but returned zero evidence for the misspelled source.
+KNOWN_REVIEW_SOURCES = ["Google", "Yelp", "Tripadvisor", "OpenTable", "Nugget"]
+_SOURCE_BY_LOWER = {s.lower(): s for s in KNOWN_REVIEW_SOURCES}
+
 
 class EvidenceItem(BaseModel):
     snippet: str
@@ -29,6 +38,20 @@ class EvidenceItem(BaseModel):
     # someone over a single stale complaint).
     review_date: str | None = None
     relevance: float = 0.0
+    # True when `relevance` is a real cross-encoder sigmoid score (a
+    # calibrated 0-1 probability, safe to label with fixed thresholds like
+    # "Strong match"). False when reranking failed or was skipped as
+    # degenerate (couldn't meaningfully tell candidates apart), in which case
+    # `relevance` is the retrieval step's own fusion score instead -- a
+    # different scale, not comparable to a real reranked score, and not safe
+    # to label with the same fixed thresholds.
+    relevance_calibrated: bool = True
+    # The single sentence within `snippet` most relevant to the query, so the
+    # frontend can highlight it -- lets a user spot the relevant part of a
+    # long, multi-paragraph review without reading the whole thing. None when
+    # snippet is already one sentence (nothing to distinguish) or when no
+    # query vector was available to score against (see rank_results).
+    highlight: str | None = None
 
 
 class SubAnswer(BaseModel):
@@ -94,7 +117,13 @@ class DecomposedQuery(BaseModel):
     complexity: Literal["simple", "complex"] = "simple"
     sub_queries: list[str] = []
     rephrased_query: str = ""
-    source_filter: str | None = None
+    # A comparison question can name more than one platform ("why is my Yelp
+    # rating lower than Google?") -- a single-value filter couldn't express
+    # "just these two, not Tripadvisor/OpenTable too", which is exactly why
+    # this was silently unused everywhere before: retrieval had no way to
+    # apply it. list[str] lets a query restrict evidence to any number of
+    # named sources; empty means no restriction.
+    source_filter: list[str] = []
     date_filter: DateFilter | None = None
     rating_filter: RatingFilter | None = None
     # Second period for trend-comparison questions ("since last month",
@@ -189,6 +218,27 @@ class DecomposedQuery(BaseModel):
     @classmethod
     def _none_to_empty_list(cls, v: list[str] | None) -> list[str]:
         return v or []
+
+    @field_validator("source_filter", mode="before")
+    @classmethod
+    def _normalize_source_filter(cls, v: list[str] | str | None) -> list[str]:
+        # Tolerate the model returning a bare string (e.g. "Google") instead
+        # of the array the prompt asks for, same defensive spirit as the
+        # None-coercion above -- a schema mismatch here shouldn't fail
+        # decomposition over a field that's supplementary to begin with.
+        if v is None:
+            raw = []
+        elif isinstance(v, str):
+            raw = [v] if v else []
+        else:
+            raw = v
+
+        # Case-normalize to the canonical stored casing (e.g. "Opentable" or
+        # "OPENTABLE" -> "OpenTable") -- Qdrant's filter match is case-exact,
+        # so anything else here would silently match zero real reviews.
+        # Unrecognized values (a name the model invented) are dropped rather
+        # than passed through, since they could never match anything either.
+        return [_SOURCE_BY_LOWER[s.lower()] for s in raw if s.lower() in _SOURCE_BY_LOWER]
 
 
 # Request / response schemas for the API

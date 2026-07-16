@@ -40,12 +40,17 @@ jobs:
       #     version in the advisory database at all, so this would fail on
       #     any transformers release, 4.x or 5.x, with or without optimum.
       #   - PYSEC-2026-597 (nltk): no fix version in the advisory database.
+      #   - PYSEC-2026-3447 (setuptools): a fix exists (83.0.0), but this is
+      #     the runner's preinstalled build-time setuptools, never a runtime
+      #     dependency of this project (pyproject.toml only requires >=68) --
+      #     not exploitable via anything this service actually runs.
       - run: >
           pip-audit
           --ignore-vuln PYSEC-2025-217
           --ignore-vuln CVE-2026-1839
           --ignore-vuln CVE-2026-4372
           --ignore-vuln PYSEC-2026-597
+          --ignore-vuln PYSEC-2026-3447
       - run: bandit -r src -ll
 
   test:

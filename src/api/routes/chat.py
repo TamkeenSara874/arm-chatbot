@@ -527,6 +527,35 @@ async def chat_query(
                 theme_count, decomposed.theme_keywords
             )
 
+    # Every guardrail/fast-path early-return above has already had its chance
+    # to fire by this point, so a full pipeline run (session context,
+    # retrieval, generation) is now certain except for a semantic-cache hit
+    # just below -- safe to start session-context building here, concurrently
+    # with the semantic cache check, instead of waiting until deep inside
+    # _pipeline_stream. Embedding sanitized once here also lets the semantic
+    # cache check below reuse it instead of a second embedding call, on the
+    # common case where rephrasing didn't change the text.
+    try:
+        sanitized_vector = await embedder.embed_one(sanitized)
+    except Exception as exc:
+        logger.warning("shared_query_embed_failed", error=str(exc))
+        sanitized_vector = None
+
+    session_context_task = asyncio.create_task(
+        build_session_context(
+            session_id=body.session_id,
+            restaurant_id=restaurant_id,
+            current_query=sanitized,
+            db_session=db,
+            vector_store=vector_store,
+            embedder=embedder,
+            recent_k=settings.session_recent_messages,
+            relevant_k=settings.session_relevant_k,
+            token_budget=settings.session_context_token_budget,
+            precomputed_query_vector=sanitized_vector,
+        )
+    )
+
     # Semantic cache check. Uses the decomposed/rephrased query (context- and
     # pronoun-resolved, more canonical than the raw message) so a paraphrase
     # of an earlier question can still hit -- exact-text caching alone would
@@ -543,6 +572,7 @@ async def chat_query(
         cache,
         settings.qdrant_collection_chat_cache,
         threshold=settings.semantic_cache_similarity_threshold,
+        precomputed_vector=sanitized_vector if retrieval_query == sanitized else None,
     )
     # bypass_cache still reuses cache_query_vector for retrieval below (no
     # point embedding the same text twice), it just refuses to treat a
@@ -550,6 +580,10 @@ async def chat_query(
     if body.bypass_cache:
         cached_semantic = None
     if cached_semantic:
+        # session_context_task was started speculatively above -- this turn
+        # is being answered from cache instead, so its result is never
+        # needed.
+        session_context_task.cancel()
         trace.cache_hit = True
         trace.emit()
         semantic_msg_id = uuid.uuid4()
@@ -577,6 +611,8 @@ async def chat_query(
             decomposed=decomposed,
             retrieval_query=retrieval_query,
             precomputed_query_vector=cache_query_vector or None,
+            sanitized_vector=sanitized_vector,
+            session_context_task=session_context_task,
             precomputed_count=precomputed_count,
             precomputed_trend=precomputed_trend,
             precomputed_breakdown=precomputed_breakdown,
@@ -1173,6 +1209,8 @@ async def _pipeline_stream(
     precomputed_overall_stats: str | None = None,
     precomputed_theme_count: str | None = None,
     precomputed_query_vector: list[float] | None = None,
+    sanitized_vector: list[float] | None = None,
+    session_context_task: asyncio.Task[str] | None = None,
 ) -> AsyncGenerator[dict, None]:
     settings_ = get_settings()
     message_id = uuid.uuid4()
@@ -1197,6 +1235,7 @@ async def _pipeline_stream(
             date_to=params.date_to,
             rating_min=params.rating_min,
             rating_max=params.rating_max,
+            source_filter=params.source_filter,
             reranker_model=settings_.reranker_model,
             precomputed_dense_vector=precomputed_query_vector,
             timing=retrieval_timing,
@@ -1215,11 +1254,14 @@ async def _pipeline_stream(
         # for every result), which is what made EvidencePanel's "match %"
         # badge and _estimate_confidence()'s avg_relevance both useless.
         t1 = time.perf_counter()
-        ranked = rank_results(
+        ranked = await rank_results(
             results,
             settings_,
             top_k=params.top_k,
             has_explicit_date_filter=bool(decomposed.date_filter),
+            query=retrieval_query,
+            reranker_model=settings_.reranker_model,
+            reranked=retrieval_timing.reranked,
         )
         trace.ranking_ms = (time.perf_counter() - t1) * 1000.0
         trace.evidence_count = len(ranked.evidence)
@@ -1238,10 +1280,15 @@ async def _pipeline_stream(
             # Hard hallucination gate: with zero retrieved evidence there is
             # nothing grounded to answer from. Prompt rule 1 ("never fabricate")
             # is a soft instruction the model can still ignore under real
-            # traffic, so skip the LLM call entirely rather than trust it --
-            # this also avoids paying for the correction/session-context
-            # embedding calls and the generation call on a query we already
-            # know can't be answered.
+            # traffic, so skip the LLM call entirely rather than trust it.
+            # session_context_task was started speculatively by the caller
+            # (concurrently with the semantic cache check, before retrieval
+            # even ran, so this gate's outcome couldn't be known yet) -- avoid
+            # leaving it dangling. It has usually already finished by now
+            # anyway (retrieval+ranking took real time in the meantime), so
+            # this is just cleanup, not a real cost avoided.
+            if session_context_task is not None:
+                session_context_task.cancel()
             model_used = "no_evidence_gate"
             full_answer = gate_answer
             for word in full_answer.split(" "):
@@ -1249,47 +1296,23 @@ async def _pipeline_stream(
             trace.generation_ms = 0.0
             trace.generation_model = model_used
         else:
-            # Correction lookup and session context have no data dependency on
-            # each other, and both independently embed this same query text --
-            # embed it once here and run both concurrently instead of two
-            # sequential calls each re-embedding the same string. On an embed
-            # failure here, query_vector stays None and each function falls
-            # back to embedding it itself (their existing per-function
-            # try/except already tolerates that), so this is a pure latency
-            # optimization with no change to failure-mode behavior.
-            try:
-                query_vector = await embedder.embed_one(sanitized)
-            except Exception as exc:
-                logger.warning("shared_query_embed_failed", error=str(exc))
-                query_vector = None
-
-            # Correction lookup. A single flag isn't confirmed -- route it into
-            # unverified_note (informational only) rather than corrections
-            # (treated as ground truth, overriding conflicting evidence) until
-            # it reaches CONSENSUS_THRESHOLD distinct flags.
-            correction_match, session_context = await asyncio.gather(
-                find_correction(
-                    query=sanitized,
-                    restaurant_id=restaurant_id,
-                    intent=decomposed.intent,
-                    embedder=embedder,
-                    vector_store=vector_store,
-                    threshold=settings_.correction_sim_threshold,
-                    precomputed_vector=query_vector,
-                ),
-                build_session_context(
-                    session_id=body.session_id,
-                    restaurant_id=restaurant_id,
-                    current_query=sanitized,
-                    db_session=db,
-                    vector_store=vector_store,
-                    embedder=embedder,
-                    recent_k=settings_.session_recent_messages,
-                    relevant_k=settings_.session_relevant_k,
-                    token_budget=settings_.session_context_token_budget,
-                    precomputed_query_vector=query_vector,
-                ),
+            # Correction lookup needs decomposed.intent, which doesn't exist
+            # until decomposition finishes, so it can't start any earlier than
+            # this. session_context_task was already started by the caller,
+            # concurrently with decomposition's tail end and the semantic
+            # cache check -- just await its result here instead of building it
+            # from scratch. Both reuse sanitized_vector (computed once by the
+            # caller) instead of each embedding the same text again.
+            correction_match = await find_correction(
+                query=sanitized,
+                restaurant_id=restaurant_id,
+                intent=decomposed.intent,
+                embedder=embedder,
+                vector_store=vector_store,
+                threshold=settings_.correction_sim_threshold,
+                precomputed_vector=sanitized_vector,
             )
+            session_context = await session_context_task if session_context_task is not None else ""
             confirmed_correction = "None"
             unverified_note = "None"
             if correction_match is not None:

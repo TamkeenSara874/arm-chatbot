@@ -30,6 +30,13 @@ class RetrievalTiming:
     embed_ms: float = 0.0
     search_ms: float = 0.0
     rerank_ms: float = 0.0
+    # False when the reranker failed or was skipped as degenerate (couldn't
+    # meaningfully discriminate between candidates) -- in either case the
+    # scores on the returned results are the retrieval step's own fusion
+    # score, not a calibrated cross-encoder probability, so a caller
+    # displaying relevance (e.g. EvidencePanel's match badge) needs to know
+    # not to treat them as directly comparable to a real reranked score.
+    reranked: bool = True
 
 
 @dataclass
@@ -40,6 +47,7 @@ class RetrievalParams:
     rating_min: float | None
     rating_max: float | None
     is_aggregation: bool
+    source_filter: list[str] | None = None
 
 
 def build_retrieval_params(decomposed: DecomposedQuery) -> RetrievalParams:
@@ -101,6 +109,7 @@ def build_retrieval_params(decomposed: DecomposedQuery) -> RetrievalParams:
         rating_min=rating_min,
         rating_max=rating_max,
         is_aggregation=is_aggregation,
+        source_filter=decomposed.source_filter or None,
     )
 
 
@@ -115,6 +124,7 @@ async def hybrid_retrieve(
     date_to: float | None = None,
     rating_min: float | None = None,
     rating_max: float | None = None,
+    source_filter: list[str] | None = None,
     reranker_model: str | None = None,
     precomputed_dense_vector: list[float] | None = None,
     timing: RetrievalTiming | None = None,
@@ -142,6 +152,8 @@ async def hybrid_retrieve(
         filters["rating_min"] = rating_min
     if rating_max is not None:
         filters["rating_max"] = rating_max
+    if source_filter:
+        filters["source_filter"] = source_filter
 
     ann_limit = max(top_k * 5, 50)
 
@@ -201,7 +213,9 @@ async def hybrid_retrieve(
         # all top_k values while still returning the full top_k results.
         candidates = results[: min(top_k * 4, 30)]
         t2 = time.perf_counter()
-        reranked = await rerank(query, candidates, model_name=reranker_model, top_k=top_k)
+        reranked = await rerank(
+            query, candidates, model_name=reranker_model, top_k=top_k, timing=timing
+        )
         rerank_ms = (time.perf_counter() - t2) * 1000.0
         logger.info(
             "retrieval_breakdown",

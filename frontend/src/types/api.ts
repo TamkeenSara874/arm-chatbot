@@ -7,6 +7,15 @@ export interface EvidenceItem {
   sentiment_conflict: boolean;
   date_inferred: boolean;
   relevance: number;
+  // True when `relevance` is a calibrated cross-encoder probability (fixed
+  // thresholds are meaningful). False when reranking failed or was skipped
+  // as degenerate, in which case `relevance` is an uncalibrated fallback
+  // score on a different scale -- see EvidencePanel's matchLabel().
+  relevance_calibrated: boolean;
+  // The sentence within `snippet` most relevant to the query, for
+  // highlighting -- null when snippet is one sentence or nothing to score
+  // against was available.
+  highlight?: string | null;
 }
 
 export interface SubAnswer {
