@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from src.config import get_settings
+from src.config import Settings, get_settings
 from src.utils.logging import configure_logging
 
 # Configure structured logging before anything else
@@ -71,12 +71,41 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("model_warmup_failed", error=str(exc))
 
+    # Sweep sessions past SESSION_TTL_DAYS. Runs in-process rather than as a
+    # cron/worker because the app is the only deployable this repo ships; if a
+    # scheduler is introduced later this should move there. Multiple uvicorn
+    # workers each run their own loop -- the deletes are idempotent (an
+    # absolute cutoff, not a relative one), so the duplicates are wasted work
+    # rather than a correctness problem.
+    purge_task = asyncio.create_task(_session_purge_loop(settings))
+
     logger.info("startup_complete")
     yield
 
     logger.info("shutdown_begin")
+    purge_task.cancel()
     await engine.dispose()
     logger.info("shutdown_complete")
+
+
+async def _session_purge_loop(settings: Settings) -> None:
+    from src.api.dependencies import get_vector_store
+    from src.core.session import purge_expired_sessions
+    from src.services.database import get_session_factory
+
+    interval_seconds = settings.session_purge_interval_hours * 3600
+    while True:
+        try:
+            async with get_session_factory()() as db:
+                await purge_expired_sessions(db, get_vector_store(), settings.session_ttl_days)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Never let a bad sweep kill the loop -- a reaper that silently
+            # stopped after one transient Qdrant blip would reintroduce exactly
+            # the unbounded growth it exists to prevent.
+            logger.warning("session_purge_cycle_failed", error=str(exc))
+        await asyncio.sleep(interval_seconds)
 
 
 def create_app() -> FastAPI:

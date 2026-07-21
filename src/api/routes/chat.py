@@ -1512,6 +1512,7 @@ async def _pipeline_stream(
                 restaurant_id=restaurant_id,
                 summary_client=summary_client,
                 summary_trigger=settings_.session_summary_trigger,
+                summary_refresh_every=settings_.session_summary_refresh_every,
                 retrieval_query=retrieval_query,
                 precomputed_query_vector=precomputed_query_vector,
             ),
@@ -1553,6 +1554,7 @@ async def _post_response_tasks(
     restaurant_id: int,
     summary_client: BaseLLMClient,
     summary_trigger: int,
+    summary_refresh_every: int,
     retrieval_query: str,
     precomputed_query_vector: list[float] | None = None,
 ) -> None:
@@ -1610,6 +1612,7 @@ async def _post_response_tasks(
                 content=sanitized,
                 embedder=embedder,
                 vector_store=vector_store,
+                answer=full_answer,
             )
 
             # Maybe trigger rolling summary
@@ -1618,6 +1621,7 @@ async def _post_response_tasks(
                 db_session=db,
                 llm_client=summary_client,
                 summary_trigger=summary_trigger,
+                refresh_every=summary_refresh_every,
             )
 
             # Cache write. Includes complexity/model_used so a future cache
@@ -1707,6 +1711,7 @@ async def _persist_instant_exchange(
                 content=sanitized,
                 embedder=embedder,
                 vector_store=vector_store,
+                answer=answer,
             )
     except Exception as exc:
         logger.warning("instant_persist_failed", error=str(exc))

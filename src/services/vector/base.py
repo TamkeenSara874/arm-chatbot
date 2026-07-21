@@ -53,6 +53,16 @@ class BaseVectorStore(ABC):
     async def delete(self, collection: str, ids: list[str]) -> None: ...
 
     @abstractmethod
+    async def delete_by_filter(self, collection: str, filters: dict[str, Any]) -> None:
+        """Delete every point matching filters.
+
+        Needed by the session reaper, which knows a cutoff timestamp but not
+        the point ids -- fetching ids first would mean paging the whole
+        expired set back over the wire just to send it again.
+        """
+        ...
+
+    @abstractmethod
     async def update_payload(
         self, collection: str, point_id: str, payload: dict[str, Any]
     ) -> None: ...

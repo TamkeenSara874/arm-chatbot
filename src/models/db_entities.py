@@ -34,6 +34,12 @@ class ChatSession(Base):
     restaurant_id: Mapped[int] = mapped_column(Integer, nullable=False)
     user_identifier: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # How many messages `summary` already covers. NULL means never summarized.
+    # This is what makes the summary rolling rather than one-shot: the refresh
+    # check compares the live message count against this, and the regeneration
+    # only reads the messages past it instead of re-summarizing the whole
+    # conversation every time (which would grow without bound).
+    summary_message_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     dietary_flags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_activity_at: Mapped[datetime] = mapped_column(

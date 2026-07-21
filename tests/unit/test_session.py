@@ -452,12 +452,18 @@ class TestCrossSessionMemory:
 
 
 class TestMaybeTriggerSummary:
-    def _make_count_db(self, count: int, summary: str | None = None) -> MagicMock:
+    def _make_count_db(
+        self,
+        count: int,
+        summary: str | None = None,
+        summary_message_count: int | None = None,
+    ) -> MagicMock:
         count_result = MagicMock()
         count_result.scalar_one = MagicMock(return_value=count)
 
         session_row = MagicMock()
         session_row.summary = summary
+        session_row.summary_message_count = summary_message_count
 
         db = MagicMock()
         db.execute = AsyncMock(return_value=count_result)
@@ -479,8 +485,9 @@ class TestMaybeTriggerSummary:
             mock_fire_and_forget.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_does_not_trigger_when_summary_already_exists(self) -> None:
-        db = self._make_count_db(count=60, summary="Existing summary.")
+    async def test_does_not_retrigger_before_refresh_interval(self) -> None:
+        # Summary covers 50 of 60 messages; only 10 new, refresh wants 20.
+        db = self._make_count_db(count=60, summary="Existing.", summary_message_count=50)
         llm_client = MagicMock()
 
         with patch("src.core.session.fire_and_forget") as mock_fire_and_forget:
@@ -489,8 +496,43 @@ class TestMaybeTriggerSummary:
                 db_session=db,
                 llm_client=llm_client,
                 summary_trigger=50,
+                refresh_every=20,
             )
             mock_fire_and_forget.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_retriggers_once_refresh_interval_elapsed(self) -> None:
+        # The old behaviour returned early whenever a summary existed, so this
+        # case -- 20 messages accumulated past a summary -- never refreshed.
+        db = self._make_count_db(count=70, summary="Existing.", summary_message_count=50)
+        llm_client = MagicMock()
+
+        with patch("src.core.session.fire_and_forget") as mock_fire_and_forget:
+            await maybe_trigger_summary(
+                session_id=uuid.uuid4(),
+                db_session=db,
+                llm_client=llm_client,
+                summary_trigger=50,
+                refresh_every=20,
+            )
+            mock_fire_and_forget.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_triggers_for_legacy_summary_with_no_coverage_recorded(self) -> None:
+        # Rows written by the old one-shot path have a summary but a NULL
+        # coverage count; they must be re-summarized once, not skipped forever.
+        db = self._make_count_db(count=60, summary="Legacy.", summary_message_count=None)
+        llm_client = MagicMock()
+
+        with patch("src.core.session.fire_and_forget") as mock_fire_and_forget:
+            await maybe_trigger_summary(
+                session_id=uuid.uuid4(),
+                db_session=db,
+                llm_client=llm_client,
+                summary_trigger=50,
+                refresh_every=20,
+            )
+            mock_fire_and_forget.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_triggers_summary_task_when_count_at_threshold(self) -> None:
@@ -523,10 +565,14 @@ class TestMaybeTriggerSummary:
 
 class TestGenerateAndSaveSummary:
     def _make_db_with_messages(
-        self, messages: list[MagicMock], session_summary: str | None = None
+        self,
+        messages: list[MagicMock],
+        session_summary: str | None = None,
+        summary_message_count: int | None = None,
     ) -> MagicMock:
         session_row = MagicMock()
         session_row.summary = session_summary
+        session_row.summary_message_count = summary_message_count
 
         scalars = MagicMock()
         scalars.all = MagicMock(return_value=messages)
@@ -572,7 +618,47 @@ class TestGenerateAndSaveSummary:
             )
 
         assert session_row.summary == "Biryani is the most popular item."
+        assert session_row.summary_message_count == 2
         db.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_refresh_folds_previous_summary_in_rather_than_rereading_all(self) -> None:
+        """Constant-cost refresh: the prompt carries the existing summary plus
+        only the messages past it, so a 200-message session does not send a
+        40k-token prompt every time it refreshes."""
+        new_messages = [
+            _make_message("user", "And the desserts?"),
+            _make_message("assistant", "Desserts average 4.2 stars."),
+        ]
+        db = self._make_db_with_messages(
+            new_messages, session_summary="Discussed mains.", summary_message_count=50
+        )
+        session_row = await db.get(None, None)
+
+        llm_client = MagicMock()
+        llm_client.complete = AsyncMock(return_value="Discussed mains and desserts.")
+
+        with self._patch_session_factory(db):
+            await _generate_and_save_summary(session_id=uuid.uuid4(), llm_client=llm_client)
+
+        prompt = llm_client.complete.await_args.kwargs["prompt"]
+        assert "Discussed mains." in prompt
+        assert "And the desserts?" in prompt
+        # Coverage advances by the new messages only, not to some live count.
+        assert session_row.summary_message_count == 52
+
+    @pytest.mark.asyncio
+    async def test_no_new_messages_skips_the_llm_call(self) -> None:
+        db = self._make_db_with_messages(
+            [], session_summary="Already current.", summary_message_count=10
+        )
+        llm_client = MagicMock()
+        llm_client.complete = AsyncMock()
+
+        with self._patch_session_factory(db):
+            await _generate_and_save_summary(session_id=uuid.uuid4(), llm_client=llm_client)
+
+        llm_client.complete.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_swallows_llm_failure_gracefully(self) -> None:
@@ -656,3 +742,124 @@ class TestStoreSessionTurn:
             embedder=embedder,
             vector_store=store,
         )
+
+    @pytest.mark.asyncio
+    async def test_answer_is_stored_in_payload_but_not_embedded(self) -> None:
+        """The reply rides along in the payload; only the question is embedded.
+
+        Embedding the reply separately would double the collection and let long
+        replies outrank short questions for the fixed relevant_k slots.
+        """
+        embedder = _make_embedder()
+        store = _make_vector_store()
+        await store_session_turn(
+            session_id=uuid.uuid4(),
+            restaurant_id=1,
+            role="user",
+            content="What is my worst dish?",
+            embedder=embedder,
+            vector_store=store,
+            answer="The truffle mac, at 2.1 stars.",
+        )
+        _, args, _ = store.upsert.mock_calls[0]
+        payload = args[1][0]["payload"]
+        assert payload["answer"] == "The truffle mac, at 2.1 stars."
+        assert payload["content"] == "What is my worst dish?"
+        embedder.embed_one.assert_awaited_once_with("What is my worst dish?")
+
+    @pytest.mark.asyncio
+    async def test_answer_key_omitted_when_not_supplied(self) -> None:
+        embedder = _make_embedder()
+        store = _make_vector_store()
+        await store_session_turn(
+            session_id=uuid.uuid4(),
+            restaurant_id=1,
+            role="user",
+            content="Hello!",
+            embedder=embedder,
+            vector_store=store,
+        )
+        _, args, _ = store.upsert.mock_calls[0]
+        assert "answer" not in args[1][0]["payload"]
+
+
+class TestPairedAnswerInContext:
+    @pytest.mark.asyncio
+    async def test_paired_answer_is_surfaced_and_attributed(self) -> None:
+        """The gap this closes: before pairing, a fact the assistant stated was
+        unreachable by semantic search once it left the recent-messages window,
+        because only user questions were ever indexed."""
+        from src.services.vector.base import SearchResult
+
+        embedder = _make_embedder()
+        store = _make_vector_store(
+            ann_results=[
+                SearchResult(
+                    id=str(uuid.uuid4()),
+                    score=0.9,
+                    payload={
+                        "role": "user",
+                        "content": "What is my worst dish?",
+                        "answer": "The truffle mac, at 2.1 stars.",
+                        "session_id": str(uuid.uuid4()),
+                        "created_at_ts": int(datetime.now(tz=UTC).timestamp()),
+                    },
+                )
+            ]
+        )
+        db = _make_db_session(messages=[])
+
+        result = await build_session_context(
+            session_id=uuid.uuid4(),
+            restaurant_id=1,
+            current_query="what was that dish you mentioned?",
+            db_session=db,
+            vector_store=store,
+            embedder=embedder,
+        )
+
+        assert "The truffle mac, at 2.1 stars." in result
+        # Framed as something previously said, not as fresh evidence -- without
+        # this the model restates stale figures as current fact.
+        assert "Assistant previously answered:" in result
+
+
+class TestPurgeExpiredSessions:
+    @pytest.mark.asyncio
+    async def test_deletes_from_postgres_and_qdrant(self) -> None:
+        from src.core.session import purge_expired_sessions
+
+        result = MagicMock()
+        result.rowcount = 3
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=result)
+        db.commit = AsyncMock()
+        store = MagicMock()
+        store.delete_by_filter = AsyncMock()
+
+        deleted = await purge_expired_sessions(db, store, ttl_days=30)
+
+        assert deleted == 3
+        db.commit.assert_awaited_once()
+        collection, filters = store.delete_by_filter.await_args.args
+        assert collection == "session_memory"
+        assert "created_before" in filters
+
+    @pytest.mark.asyncio
+    async def test_qdrant_failure_does_not_lose_postgres_progress(self) -> None:
+        """Postgres is already committed by then; a Qdrant blip must not raise
+        and undo the reported count -- the next sweep retries on an absolute
+        cutoff, so the leftover points are picked up anyway."""
+        from src.core.session import purge_expired_sessions
+
+        result = MagicMock()
+        result.rowcount = 2
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=result)
+        db.commit = AsyncMock()
+        store = MagicMock()
+        store.delete_by_filter = AsyncMock(side_effect=RuntimeError("Qdrant down"))
+
+        deleted = await purge_expired_sessions(db, store, ttl_days=30)
+
+        assert deleted == 2
