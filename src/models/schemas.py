@@ -355,6 +355,10 @@ class ReviewIngestResponse(BaseModel):
     chunks_written: int
 
 
+class VoiceTranscribeResponse(BaseModel):
+    text: str
+
+
 class ReportRequest(BaseModel):
     session_id: uuid.UUID
     restaurant_id: int

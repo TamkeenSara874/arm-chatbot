@@ -1,11 +1,23 @@
-import { BookOpen, Clock, Database, DollarSign, RotateCcw } from 'lucide-react';
+import { BookOpen, Clock, Database, DollarSign, RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useSpeechSynthesis } from '../hooks/useSpeechSynthesis';
 import { useSSE } from '../hooks/useSSE';
 import { useChatStore, type LocalMessage } from '../store/chatStore';
 import { CorrectionModal } from './CorrectionModal';
 import { FeedbackButtons } from './FeedbackButtons';
+
+// Strips the handful of markdown constructs the generation prompt actually
+// produces (bold, "- "/"1. " lists) -- read literally, "asterisk asterisk"
+// and dash characters make read-aloud sound broken rather than natural.
+function stripMarkdownForSpeech(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/^[-*]\s+/gm, '')
+    .replace(/^\d+\.\s+/gm, '')
+    .trim();
+}
 
 // Renders the assistant's markdown-lite answer (the prompt only ever asks the
 // model for **bold** emphasis, paragraphs, and "- " lists -- links/images
@@ -105,6 +117,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const { selectedMessageId, setSelectedMessageId, messages, sessionId, restaurantId, isStreaming } =
     useChatStore();
   const { regenerate } = useSSE();
+  const speech = useSpeechSynthesis();
   const isSelected = selectedMessageId === message.id;
 
   const messageIndex = messages.findIndex((m) => m.id === message.id);
@@ -207,6 +220,25 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               )}
 
               <FeedbackButtons message={message} onCorrect={() => setCorrecting(true)} />
+
+              {speech.isSupported && message.content && !message.isStreaming && (
+                <button
+                  onClick={() =>
+                    speech.isSpeaking
+                      ? speech.stop()
+                      : speech.speak(stripMarkdownForSpeech(message.content))
+                  }
+                  title={speech.isSpeaking ? 'Stop reading aloud' : 'Read answer aloud'}
+                  className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium transition ${
+                    speech.isSpeaking
+                      ? 'bg-aio-100 text-aio-600'
+                      : 'bg-gray-100 text-gray-500 hover:bg-aio-50 hover:text-aio-500'
+                  }`}
+                >
+                  {speech.isSpeaking ? <VolumeX size={11} /> : <Volume2 size={11} />}
+                  {speech.isSpeaking ? 'Stop' : 'Listen'}
+                </button>
+              )}
 
               {precedingUserMessage && (
                 <button

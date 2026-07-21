@@ -40,6 +40,16 @@ class Settings(BaseSettings):
     groq_api_keys: str = ""
     openai_api_key: str = ""
 
+    # Speech-to-text (voice mode dictation). Groq's free tier (2,000
+    # requests/day as of writing) comfortably covers real usage at
+    # chatbot-question audio lengths -- same cost/latency tradeoff already
+    # made for decomposition (Groq over a paid alternative).
+    stt_provider: str = "groq"
+    groq_stt_model: str = "whisper-large-v3-turbo"
+    # Multipart audio uploads for voice dictation are short spoken questions,
+    # not files -- a much tighter cap than the batch review-ingest limit.
+    voice_max_upload_mb: int = 10
+
     # Model names — change these env vars to switch models, no code edits needed
     # gpt-4o-mini is the approved simple-query and entity-extraction model
     # gpt-4.1 replaces gpt-4o for complex queries (same capability tier, allowed by project key)
@@ -96,6 +106,7 @@ class Settings(BaseSettings):
     rate_limit_ingest_review: str = "60/minute"
     rate_limit_correct: str = "20/minute"
     rate_limit_read: str = "60/minute"
+    rate_limit_voice: str = "20/minute"
 
     # Session
     session_ttl_days: int = 30
