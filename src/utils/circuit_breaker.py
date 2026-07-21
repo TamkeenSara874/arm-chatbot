@@ -93,5 +93,6 @@ def _breaker(name: str, fail_max: int = 5, reset_timeout: int = 60) -> AsyncCirc
 
 
 groq_breaker = _breaker("groq")
+groq_stt_breaker = _breaker("groq_stt")
 openai_breaker = _breaker("openai")
 qdrant_breaker = _breaker("qdrant", fail_max=3, reset_timeout=30)

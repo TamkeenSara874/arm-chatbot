@@ -6,6 +6,7 @@ import type {
   InsightsReport,
   ReportRequest,
   SessionResponse,
+  VoiceTranscribeResponse,
 } from '../types/api';
 import { useChatStore } from '../store/chatStore';
 
@@ -139,4 +140,27 @@ export const api = {
     request<IngestJobResponse>(`/api/v1/ingest/${jobId}/status`, {}, true),
 
   getAlerts: () => request<AnomalyAlertResponse>('/api/v1/chat/alerts', {}, true),
+
+  // Bypasses request()'s JSON Content-Type -- the browser must set its own
+  // multipart/form-data boundary, which it only does when Content-Type is
+  // left unset on a FormData body.
+  transcribeVoice: async (audioBlob: Blob): Promise<VoiceTranscribeResponse> => {
+    const token = getRequiredJwt();
+    const body = new FormData();
+    body.append('file', audioBlob, 'clip.webm');
+    const res = await fetch(`${BASE}/api/v1/voice/transcribe`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body,
+    });
+    if (res.status === 401) {
+      resetToLogin();
+      throw new AuthExpiredError();
+    }
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      throw new Error(`${res.status}: ${errBody}`);
+    }
+    return res.json() as Promise<VoiceTranscribeResponse>;
+  },
 };

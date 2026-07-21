@@ -119,6 +119,10 @@ export interface ReportResponse {
   report: InsightsReport;
 }
 
+export interface VoiceTranscribeResponse {
+  text: string;
+}
+
 export interface AnomalyAlertResponse {
   detected: boolean;
   message?: string | null;

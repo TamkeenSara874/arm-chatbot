@@ -19,6 +19,8 @@ from src.services.llm.factory import (
     create_simple_client,
     create_summary_client,
 )
+from src.services.stt.base import BaseSTTClient
+from src.services.stt.factory import create_stt_client
 from src.services.vector.base import BaseVectorStore
 from src.services.vector.factory import create_vector_store
 
@@ -103,6 +105,11 @@ def _summary_client_singleton() -> BaseLLMClient:
 
 
 @lru_cache(maxsize=1)
+def _stt_client_singleton() -> BaseSTTClient:
+    return create_stt_client(get_settings())
+
+
+@lru_cache(maxsize=1)
 def _embedder_singleton() -> BaseEmbedder:
     return create_embedder(get_settings())
 
@@ -137,6 +144,10 @@ def get_complex_client() -> BaseLLMClient:
 
 def get_summary_client() -> BaseLLMClient:
     return _summary_client_singleton()
+
+
+def get_stt_client() -> BaseSTTClient:
+    return _stt_client_singleton()
 
 
 def get_embedder() -> BaseEmbedder:

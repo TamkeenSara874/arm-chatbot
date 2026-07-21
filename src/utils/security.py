@@ -197,3 +197,30 @@ def check_file_upload(filename: str, content_type: str, size_bytes: int) -> None
         raise ValueError(
             f"Unsupported content type: {content_type}. Accepted: {sorted(allowed_types)}"
         )
+
+
+# Covers what browser MediaRecorder implementations actually produce
+# (webm/opus in Chrome/Firefox, mp4/aac in Safari) plus common raw formats a
+# non-browser client might send.
+_ALLOWED_AUDIO_TYPES = {
+    "audio/webm",
+    "audio/ogg",
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/wav",
+    "audio/x-wav",
+}
+
+
+def check_audio_upload(content_type: str, size_bytes: int) -> None:
+    """Raise ValueError for invalid voice-dictation audio uploads."""
+    from src.config import get_settings
+
+    max_bytes = get_settings().voice_max_upload_mb * 1024 * 1024
+    if size_bytes > max_bytes:
+        raise ValueError(f"Audio too large: {size_bytes} bytes exceeds {max_bytes} byte limit")
+
+    if content_type not in _ALLOWED_AUDIO_TYPES:
+        raise ValueError(
+            f"Unsupported audio content type: {content_type}. Accepted: {sorted(_ALLOWED_AUDIO_TYPES)}"
+        )
