@@ -110,9 +110,21 @@ class Settings(BaseSettings):
 
     # Session
     session_ttl_days: int = 30
+    # How often expired sessions are swept. Purely a background reaper, so a
+    # long interval is fine -- the point is that it runs at all, not that it
+    # runs promptly.
+    session_purge_interval_hours: int = 6
     session_recent_messages: int = 5
     session_relevant_k: int = 3
-    session_summary_trigger: int = 50
+    # The recent-messages block already covers session_recent_messages pairs
+    # verbatim, so a summary only starts earning its keep once a conversation
+    # runs past that window. At recent_messages=5 (10 messages) the gap opens
+    # around message 10, which is why this is 20 and not the old 50 -- at 50,
+    # conversations between 10 and 50 messages had no summary at all.
+    session_summary_trigger: int = 20
+    # The summary is refreshed every N messages beyond what it already covers,
+    # rather than being written once and frozen.
+    session_summary_refresh_every: int = 20
     session_context_token_budget: int = 6000
 
     # Ingestion

@@ -7,6 +7,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.models import (
     FieldCondition,
     Filter,
+    FilterSelector,
     Fusion,
     FusionQuery,
     MatchAny,
@@ -209,6 +210,25 @@ class QdrantStore(BaseVectorStore):
 
         await fetch_with_retry(lambda: qdrant_breaker.call_async(_call), label="qdrant.delete")
 
+    async def delete_by_filter(self, collection: str, filters: dict[str, Any]) -> None:
+        qdrant_filter = self._build_filter(filters)
+        if qdrant_filter is None:
+            # An empty filter would delete the entire collection. Refuse rather
+            # than trust every future caller to have built its filter dict
+            # correctly.
+            raise ValueError("delete_by_filter requires at least one recognised filter key")
+
+        async def _call() -> None:
+            await self.client.delete(
+                collection_name=collection,
+                points_selector=FilterSelector(filter=qdrant_filter),
+                wait=True,
+            )
+
+        await fetch_with_retry(
+            lambda: qdrant_breaker.call_async(_call), label="qdrant.delete_by_filter"
+        )
+
     async def update_payload(self, collection: str, point_id: str, payload: dict[str, Any]) -> None:
         async def _call() -> None:
             await self.client.set_payload(
@@ -248,6 +268,16 @@ class QdrantStore(BaseVectorStore):
             range_kwargs["lte"] = float(filters["date_to"])
         if range_kwargs:
             conditions.append(FieldCondition(key="review_date_ts", range=Range(**range_kwargs)))
+
+        # Distinct from date_from/date_to above: those range over a review's own
+        # date (review_date_ts), whereas this ranges over when a point was
+        # written (created_at_ts). The session reaper needs the latter.
+        if filters.get("created_before") is not None:
+            conditions.append(
+                FieldCondition(
+                    key="created_at_ts", range=Range(lt=float(filters["created_before"]))
+                )
+            )
 
         rating_kwargs: dict[str, float] = {}
         if filters.get("rating_min") is not None:

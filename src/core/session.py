@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.db_entities import ChatMessage, ChatSession
@@ -67,6 +67,7 @@ async def store_session_turn(
     content: str,
     embedder: BaseEmbedder,
     vector_store: BaseVectorStore,
+    answer: str | None = None,
 ) -> None:
     """Embed and upsert one message into the session_memory Qdrant collection.
 
@@ -74,25 +75,31 @@ async def store_session_turn(
     both within this session and, via build_session_context's restaurant_id
     filter, across this restaurant's other sessions too (cross-session memory).
     Failures are swallowed so a Qdrant outage never breaks the chat response.
+
+    `answer` carries the assistant's reply to `content` into the payload. Only
+    the user's question is embedded -- the reply just rides along. Storing the
+    reply as its own point instead would have cost a second embedding call per
+    turn, doubled the collection, and let long multi-topic replies outscore
+    short intent-shaped questions for the fixed relevant_k slots. Pairing gets
+    the same recall for free: without it, a fact the assistant stated was
+    unreachable by semantic search at any distance once it fell out of the
+    recent-messages window, because only questions were ever indexed.
     """
     point_id = str(uuid.uuid4())
     try:
         vector = await embedder.embed_one(content)
+        payload: dict[str, object] = {
+            "session_id": str(session_id),
+            "restaurant_id": restaurant_id,
+            "role": role,
+            "content": content,
+            "created_at_ts": int(datetime.now(tz=UTC).timestamp()),
+        }
+        if answer:
+            payload["answer"] = answer
         await vector_store.upsert(
             SESSION_MEMORY_COLLECTION,
-            [
-                {
-                    "id": point_id,
-                    "vector": vector,
-                    "payload": {
-                        "session_id": str(session_id),
-                        "restaurant_id": restaurant_id,
-                        "role": role,
-                        "content": content,
-                        "created_at_ts": int(datetime.now(tz=UTC).timestamp()),
-                    },
-                }
-            ],
+            [{"id": point_id, "vector": vector, "payload": payload}],
         )
     except Exception as exc:
         logger.warning(
@@ -213,7 +220,16 @@ async def build_session_context(
                     age_note = f" (from a past conversation, {int(days_ago)} day(s) ago)"
 
             label = "User" if role == "user" else "Assistant"
-            relevant_turns.append(f"{label}: {content}{age_note}")
+            turn = f"{label}: {content}{age_note}"
+
+            # The paired reply is rendered as something the assistant said
+            # *previously*, not as evidence. Without that framing the model
+            # treats its own prior answer as an established fact and will
+            # restate a figure that new ingestion has since changed.
+            answer = ann_result.payload.get("answer")
+            if answer:
+                turn += f"\nAssistant previously answered: {answer}"
+            relevant_turns.append(turn)
             if len(relevant_turns) >= relevant_k:
                 break
     except Exception as exc:
@@ -244,13 +260,65 @@ async def build_session_context(
     return enforce_token_budget(combined, max_tokens=token_budget)
 
 
+async def purge_expired_sessions(
+    db_session: AsyncSession,
+    vector_store: BaseVectorStore,
+    ttl_days: int,
+) -> int:
+    """Delete sessions idle for longer than ttl_days, from Postgres and Qdrant.
+
+    SESSION_TTL_DAYS has been a setting since the first migration but nothing
+    ever enforced it, so chat_session, chat_message and the session_memory
+    collection all grew without bound. session_memory is the expensive one:
+    every point is a 3072-dim vector Qdrant holds in RAM.
+
+    Postgres first, then Qdrant. If the process dies between the two, the
+    leftover Qdrant points are unreferenced but harmless, and the next sweep
+    removes them anyway because the cutoff is absolute rather than relative to
+    what Postgres still holds. Doing it the other way round would leave
+    sessions whose memory had been deleted underneath them.
+
+    Returns the number of sessions deleted.
+    """
+    cutoff = datetime.now(tz=UTC) - timedelta(days=ttl_days)
+
+    # chat_message rows go with them via ON DELETE CASCADE on the FK.
+    result = await db_session.execute(
+        delete(ChatSession).where(ChatSession.last_activity_at < cutoff)
+    )
+    deleted = result.rowcount or 0
+    await db_session.commit()
+
+    try:
+        await vector_store.delete_by_filter(
+            SESSION_MEMORY_COLLECTION,
+            {"created_before": int(cutoff.timestamp())},
+        )
+    except Exception as exc:
+        # Postgres is already committed. Log and let the next sweep retry
+        # rather than failing the whole purge and losing that progress.
+        logger.warning("session_memory_purge_failed", error=str(exc))
+
+    if deleted:
+        logger.info("expired_sessions_purged", count=deleted, ttl_days=ttl_days)
+    return deleted
+
+
 async def maybe_trigger_summary(
     session_id: uuid.UUID,
     db_session: AsyncSession,
     llm_client: BaseLLMClient,
-    summary_trigger: int = 50,
+    summary_trigger: int = 20,
+    refresh_every: int = 20,
 ) -> None:
-    """Check message count and fire a background summary task if the trigger is reached.
+    """Fire a background summary task if the session is due for one.
+
+    Due means either "never summarized and past the trigger", or "summarized,
+    but refresh_every more messages have accumulated since". The previous
+    version returned early whenever a summary already existed, so it ran
+    exactly once per session and then froze -- a conversation that reached 200
+    messages still carried a summary of its first 50, and nothing covered the
+    other 150.
 
     The task runs as a fire-and-forget asyncio task so it never delays the response.
     """
@@ -263,7 +331,12 @@ async def maybe_trigger_summary(
         return
 
     session_row = await db_session.get(ChatSession, session_id)
-    if session_row and session_row.summary is not None:
+    covered = session_row.summary_message_count if session_row else None
+
+    # covered is NULL for a session written by the old one-shot path, which
+    # never recorded its coverage. Treating that as 0 re-summarizes from the
+    # start once, after which the count is accurate.
+    if covered is not None and message_count - covered < refresh_every:
         return
 
     fire_and_forget(
@@ -285,23 +358,46 @@ async def _generate_and_save_summary(
 
     try:
         async with get_session_factory()() as db_session:
+            session_row = await db_session.get(ChatSession, session_id)
+            if session_row is None:
+                return
+
+            previous_summary = session_row.summary
+            covered = session_row.summary_message_count or 0
+
+            # Only the messages the existing summary does not already cover.
+            # Re-reading the whole conversation each refresh would make every
+            # summary call more expensive than the last -- at 200 messages that
+            # is a ~40k-token prompt, several times an hour, forever.
             stmt = (
                 select(ChatMessage)
                 .where(ChatMessage.session_id == session_id)
                 .order_by(ChatMessage.created_at)
+                .offset(covered)
             )
             result = await db_session.execute(stmt)
-            messages = result.scalars().all()
+            new_messages = result.scalars().all()
+            if not new_messages:
+                return
 
             conversation = "\n".join(
-                f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}" for m in messages
+                f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}" for m in new_messages
             )
 
-            summary = await llm_client.complete(
-                prompt=(
+            if previous_summary and covered:
+                prompt = (
+                    f"Summary so far:\n{previous_summary}\n\n"
+                    f"New messages since that summary:\n{conversation}\n\n"
+                    "Output a single 2-3 sentence summary covering both. No preamble."
+                )
+            else:
+                prompt = (
                     f"Conversation to summarize:\n{conversation}\n\n"
                     "Output a 2-3 sentence summary only. No preamble."
-                ),
+                )
+
+            summary = await llm_client.complete(
+                prompt=prompt,
                 system=(
                     "You are a conversation summarizer. Produce a dense, factual summary "
                     "in 2-3 sentences. Preserve all specific facts mentioned. Never editorialize."
@@ -310,11 +406,22 @@ async def _generate_and_save_summary(
                 temperature=0.2,
             )
 
+            # Re-read rather than reusing the row fetched above: this task is
+            # fire-and-forget and the conversation may have advanced while the
+            # LLM call was in flight. Recording covered + len(new_messages)
+            # (not the live count) keeps the marker honest about what the
+            # summary text actually covers.
             session_row = await db_session.get(ChatSession, session_id)
             if session_row:
                 session_row.summary = summary
+                session_row.summary_message_count = covered + len(new_messages)
                 await db_session.commit()
-                logger.info("session_summary_saved", session_id=str(session_id))
+                logger.info(
+                    "session_summary_saved",
+                    session_id=str(session_id),
+                    covers_messages=covered + len(new_messages),
+                    incremental=bool(previous_summary and covered),
+                )
     except Exception as exc:
         logger.warning(
             "session_summary_failed",

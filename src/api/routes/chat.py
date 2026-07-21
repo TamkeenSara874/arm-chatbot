@@ -40,7 +40,13 @@ from src.api.dependencies import (
 from src.api.rate_limit import limiter
 from src.config import get_settings
 from src.core.anomaly import get_anomaly_status
-from src.core.correction import find_correction, store_correction
+from src.core.correction import (
+    check_stat_contradiction,
+    find_correction,
+    reject_correction,
+    session_in_cooldown,
+    store_correction,
+)
 from src.core.crisis_guardrail import CRISIS_RESPONSE, detect_crisis_language
 from src.core.decomposition import decompose_query
 from src.core.generation import (
@@ -78,6 +84,7 @@ from src.models.schemas import (
     AnomalyAlertResponse,
     ChatQueryRequest,
     ChatResponseSchema,
+    CorrectionRejectResponse,
     CorrectionRequest,
     CorrectionResponse,
     EvidenceItem,
@@ -97,7 +104,12 @@ from src.services.prompt_service import get_prompt_loader
 from src.services.vector.base import BaseVectorStore
 from src.utils.background import fire_and_forget
 from src.utils.metrics import active_sessions_gauge, count_query_total
-from src.utils.security import redact_reviewer_names, sanitize_input, validate_llm_output
+from src.utils.security import (
+    flag_injection,
+    redact_reviewer_names,
+    sanitize_input,
+    validate_llm_output,
+)
 from src.utils.tracing import RequestTrace
 
 logger = structlog.get_logger()
@@ -755,6 +767,30 @@ async def submit_correction(
     cache: Cache,
     decomp_client: DecompClient,
 ) -> CorrectionResponse:
+    # Cheap friction against rapid-fire scripted submission, checked before
+    # any real work happens: a distinct-session vote count alone doesn't stop
+    # one attacker holding several sessions open and firing them in a burst.
+    if await session_in_cooldown(db, body.session_id):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Please wait before submitting another correction from this session.",
+        )
+
+    # A correction's text is inserted directly into the generation prompt as
+    # ground truth once consensus is reached -- the same injection patterns
+    # reviews get flagged (not rejected) for at ingest time are rejected
+    # outright here, since there's no legitimate reason a real correction
+    # would contain them.
+    if flag_injection(body.corrected_response, restaurant_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Corrected response contains disallowed content.",
+        )
+
+    contradiction = await check_stat_contradiction(body.corrected_response, db, restaurant_id)
+    if contradiction is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=contradiction)
+
     # Retrieve the original message to get the query text and restaurant_id
     user_msg = await db.get(ChatMessage, body.message_id)
     if user_msg is None:
@@ -793,7 +829,10 @@ async def submit_correction(
     recent_turns = await build_recent_turns_context(user_msg.session_id, db)
     loader = get_prompt_loader()
     decomp_system, decomp_user = loader.format(
-        "query_decomposition", query=user_msg.content, session_context=recent_turns
+        "query_decomposition",
+        query=user_msg.content,
+        session_context=recent_turns,
+        current_date=datetime.now(UTC).date().isoformat(),
     )
     decomposed = await decompose_query(decomp_client, decomp_user, decomp_system)
 
@@ -807,6 +846,7 @@ async def submit_correction(
         embedder=embedder,
         vector_store=vector_store,
         db_session=db,
+        ip_address=request.client.host if request.client else None,
         sim_threshold=get_settings().correction_sim_threshold,
     )
 
@@ -834,6 +874,33 @@ async def submit_correction(
         session_id=str(body.session_id),
     )
     return CorrectionResponse(correction_id=correction_id, is_consensus=is_consensus)
+
+
+@router.delete("/corrections/{correction_id}", response_model=CorrectionRejectResponse)
+@limiter.limit(settings.rate_limit_correct)
+async def reject_correction_route(
+    request: Request,
+    correction_id: uuid.UUID,
+    restaurant_id: RestaurantId,
+    db: DbSession,
+    vector_store: VectorStore,
+) -> CorrectionRejectResponse:
+    """Admin undo for a bad/poisoned correction -- gated by the same
+    restaurant JWT every other route in this file uses (there's no separate
+    admin role in this app's auth model yet), but critically this is
+    something no route offered at all before: once a correction reached
+    consensus, there was no way to remove it short of manual DB/Qdrant
+    surgery. See reject_correction()'s docstring for what "reject" actually
+    does (delete the Qdrant point, keep the Postgres row + vote history for
+    audit).
+    """
+    ok = await reject_correction(db, vector_store, correction_id, restaurant_id)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Correction not found")
+    logger.info(
+        "correction_rejected", correction_id=str(correction_id), restaurant_id=restaurant_id
+    )
+    return CorrectionRejectResponse(ok=True)
 
 
 _SENTIMENT_KEYWORDS: dict[str, str] = {
@@ -1445,6 +1512,7 @@ async def _pipeline_stream(
                 restaurant_id=restaurant_id,
                 summary_client=summary_client,
                 summary_trigger=settings_.session_summary_trigger,
+                summary_refresh_every=settings_.session_summary_refresh_every,
                 retrieval_query=retrieval_query,
                 precomputed_query_vector=precomputed_query_vector,
             ),
@@ -1486,6 +1554,7 @@ async def _post_response_tasks(
     restaurant_id: int,
     summary_client: BaseLLMClient,
     summary_trigger: int,
+    summary_refresh_every: int,
     retrieval_query: str,
     precomputed_query_vector: list[float] | None = None,
 ) -> None:
@@ -1543,6 +1612,7 @@ async def _post_response_tasks(
                 content=sanitized,
                 embedder=embedder,
                 vector_store=vector_store,
+                answer=full_answer,
             )
 
             # Maybe trigger rolling summary
@@ -1551,6 +1621,7 @@ async def _post_response_tasks(
                 db_session=db,
                 llm_client=summary_client,
                 summary_trigger=summary_trigger,
+                refresh_every=summary_refresh_every,
             )
 
             # Cache write. Includes complexity/model_used so a future cache
@@ -1640,6 +1711,7 @@ async def _persist_instant_exchange(
                 content=sanitized,
                 embedder=embedder,
                 vector_store=vector_store,
+                answer=answer,
             )
     except Exception as exc:
         logger.warning("instant_persist_failed", error=str(exc))
