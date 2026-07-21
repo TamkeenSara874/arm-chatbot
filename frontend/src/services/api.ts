@@ -26,6 +26,38 @@ export function getStoredJwt(): string | null {
   return localStorage.getItem(JWT_KEY);
 }
 
+// Keep in step with _ALLOWED_AUDIO_TYPES in src/utils/security.py, which is
+// what actually accepts or rejects the upload.
+const AUDIO_EXTENSIONS: Record<string, string> = {
+  'audio/webm': 'webm',
+  'audio/ogg': 'ogg',
+  'audio/mp4': 'mp4',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+};
+
+/** Filename matching what the recorder actually produced.
+ *
+ * The extension used to be hardcoded to .webm, which is only true on
+ * Chrome/Firefox -- Safari/iOS cannot record webm at all and give mp4, so
+ * every Safari clip was uploaded under a name that contradicted its own
+ * bytes. Nothing downstream reads the filename today (validation uses the
+ * part's Content-Type, and Whisper identifies the container from its magic
+ * bytes), so this was latent rather than breaking. It is still worth being
+ * honest about: the next change that does trust the extension -- a stricter
+ * allowlist, an explicit ffmpeg format hint, an STT provider that goes by
+ * filename -- would break Safari alone while every desktop browser kept
+ * working, and logs would meanwhile describe the wrong format.
+ */
+export function audioFilename(blobType: string): string {
+  // MediaRecorder reports codec parameters too, e.g. "audio/webm;codecs=opus",
+  // so match on the bare type rather than the whole string.
+  const mime = blobType.split(';')[0].trim().toLowerCase();
+  const extension = AUDIO_EXTENSIONS[mime] ?? mime.split('/')[1] ?? 'webm';
+  return `clip.${extension}`;
+}
+
 function storeJwt(token: string): void {
   localStorage.setItem(JWT_KEY, token);
 }
@@ -147,7 +179,7 @@ export const api = {
   transcribeVoice: async (audioBlob: Blob): Promise<VoiceTranscribeResponse> => {
     const token = getRequiredJwt();
     const body = new FormData();
-    body.append('file', audioBlob, 'clip.webm');
+    body.append('file', audioBlob, audioFilename(audioBlob.type));
     const res = await fetch(`${BASE}/api/v1/voice/transcribe`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
