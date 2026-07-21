@@ -86,8 +86,39 @@ class ChatCorrection(Base):
     corrected_response: Mapped[str] = mapped_column(Text, nullable=False)
     correction_count: Mapped[int] = mapped_column(Integer, default=1)
     is_consensus: Mapped[bool] = mapped_column(Boolean, default=False)
+    # True once an admin has rejected this correction (e.g. a poisoning
+    # attempt) -- the row and its vote history stay for audit purposes, but
+    # find_correction() can never surface it again because the reject
+    # endpoint also deletes the corresponding Qdrant point.
+    is_rejected: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ChatCorrectionVote(Base):
+    """One row per (correction, session) that has corroborated it.
+
+    The unique constraint is what actually enforces "distinct sessions" --
+    correction_count is derived from COUNT(DISTINCT session_id) here, not
+    incremented on trust, so a single session repeatedly hitting POST
+    /chat/correct can no longer manufacture consensus on its own.
+    """
+
+    __tablename__ = "chat_correction_vote"
+    __table_args__ = (
+        Index("ix_correction_vote_correction_id", "correction_id"),
+        Index("ix_correction_vote_session_id", "session_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    correction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_correction.id"), nullable=False
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ReviewChunkMeta(Base):

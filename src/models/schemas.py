@@ -306,6 +306,10 @@ class CorrectionResponse(BaseModel):
     is_consensus: bool
 
 
+class CorrectionRejectResponse(BaseModel):
+    ok: bool
+
+
 class FeedbackRequest(BaseModel):
     message_id: uuid.UUID
 
