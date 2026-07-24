@@ -2,10 +2,13 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from src.core.guardrail import (
     GUARDRAIL_INTENTS,
     GUARDRAIL_RESPONSES,
     check_guardrail,
+    detect_greeting,
 )
 
 
@@ -71,3 +74,25 @@ def test_no_em_dashes_in_responses() -> None:
     for response in GUARDRAIL_RESPONSES.values():
         assert "—" not in response, "Em dash found in guardrail response"
         assert "–" not in response, "En dash found in guardrail response"
+
+
+class TestDetectGreeting:
+    @pytest.mark.parametrize(
+        "text",
+        ["hey", "Hi", "hello!", "  hey there ", "Thanks", "thank you.", "ok", "Good morning"],
+    )
+    def test_bare_greetings_match(self, text: str) -> None:
+        assert detect_greeting(text) is True
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "hey what do guests complain about?",  # greeting + real question
+            "how has my rating changed?",
+            "hello world of reviews and what they say",
+            "why is my rating low",
+            "",
+        ],
+    )
+    def test_real_messages_do_not_match(self, text: str) -> None:
+        assert detect_greeting(text) is False

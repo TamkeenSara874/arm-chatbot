@@ -1,6 +1,58 @@
 from __future__ import annotations
 
+import re
+
 from src.utils.metrics import guardrail_triggered_total
+
+# A bare greeting or acknowledgement carries no question, so it must never reach
+# review generation: with prior turns in the session context, the model answers
+# "hey" by regurgitating the last topic (confirmed live -- "hey" returned a full
+# atmosphere summary). Handled deterministically and *before* decomposition, so
+# no session context is ever assembled for it.
+GREETING_RESPONSE = (
+    "Happy to help! Ask me anything about your guest reviews and I'll answer "
+    "from what your customers have said."
+)
+
+# Whole-message greetings only. Deliberately exact-match against a normalised
+# form so "hey" matches but "hey, what do guests say about parking?" does not --
+# a real question that merely opens with a greeting must go through the pipeline.
+_GREETINGS: frozenset[str] = frozenset(
+    {
+        "hi",
+        "hey",
+        "hello",
+        "yo",
+        "hiya",
+        "heya",
+        "hey there",
+        "hi there",
+        "hello there",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "thanks",
+        "thank you",
+        "thankyou",
+        "ty",
+        "thx",
+        "cheers",
+        "ok",
+        "okay",
+        "cool",
+        "great",
+        "got it",
+        "sounds good",
+    }
+)
+
+
+def detect_greeting(text: str) -> bool:
+    """True when the entire message is a bare greeting or acknowledgement."""
+    normalized = re.sub(r"[^a-z\s]", "", text.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized in _GREETINGS
+
 
 GUARDRAIL_RESPONSES: dict[str, str] = {
     "out_of_scope": (
