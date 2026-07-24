@@ -8,6 +8,7 @@ import pytest
 
 from src.core.session import (
     _generate_and_save_summary,
+    build_recall_context,
     build_recent_turns_context,
     build_session_context,
     maybe_trigger_summary,
@@ -50,7 +51,6 @@ def _make_embedder(vector: list[float] | None = None) -> MagicMock:
 
 
 def _make_vector_store(ann_results=None) -> MagicMock:
-
     store = MagicMock()
     store.search = AsyncMock(return_value=ann_results or [])
     store.upsert = AsyncMock()
@@ -318,128 +318,21 @@ class TestAnnNotInRecent:
         assert "Relevant past exchanges" in result
 
 
-class TestCrossSessionMemory:
-    """Coverage for widening build_session_context's ANN search from
-
-    session_id-only to restaurant_id (so a relevant exchange from a
-    different, past session surfaces too), plus the age labeling and
-    staleness cutoff that come with searching beyond one session's lifetime.
-    """
+class TestSessionScopedContext:
+    """build_session_context is scoped to the CURRENT conversation only. It used
+    to search restaurant-wide, which bled turns from unrelated past chats into
+    every answer; cross-conversation recall now lives solely in
+    build_recall_context (TestBuildRecallContext)."""
 
     @pytest.mark.asyncio
-    async def test_recent_cross_session_turn_gets_age_label(self) -> None:
-        from src.services.vector.base import SearchResult
-
-        other_session_id = uuid.uuid4()
-        content = "Last time I asked, the ambiance was described as charming."
-        five_days_ago = datetime.now(tz=UTC).timestamp() - 5 * 86400
-
-        messages = [_make_message("user", "current question")]
-        db = _make_db_session(messages=messages)
-        embedder = _make_embedder()
-        ann = [
-            SearchResult(
-                id="cross1",
-                score=0.9,
-                payload={
-                    "role": "user",
-                    "content": content,
-                    "session_id": str(other_session_id),
-                    "created_at_ts": five_days_ago,
-                },
-            )
-        ]
-        store = _make_vector_store(ann_results=ann)
-
-        result = await build_session_context(
-            session_id=uuid.uuid4(),
-            restaurant_id=1,
-            current_query="how is the ambiance?",
-            db_session=db,
-            vector_store=store,
-            embedder=embedder,
-        )
-
-        assert content in result
-        assert "5 day(s) ago" in result
-
-    @pytest.mark.asyncio
-    async def test_cross_session_turn_older_than_cutoff_is_excluded(self) -> None:
-        from src.core.session import MAX_CROSS_SESSION_AGE_DAYS
-        from src.services.vector.base import SearchResult
-
-        other_session_id = uuid.uuid4()
-        content = "Ancient conversation about the menu."
-        too_old = datetime.now(tz=UTC).timestamp() - (MAX_CROSS_SESSION_AGE_DAYS + 1) * 86400
-
-        messages = [_make_message("user", "current question")]
-        db = _make_db_session(messages=messages)
-        embedder = _make_embedder()
-        ann = [
-            SearchResult(
-                id="cross2",
-                score=0.9,
-                payload={
-                    "role": "user",
-                    "content": content,
-                    "session_id": str(other_session_id),
-                    "created_at_ts": too_old,
-                },
-            )
-        ]
-        store = _make_vector_store(ann_results=ann)
-
-        result = await build_session_context(
-            session_id=uuid.uuid4(),
-            restaurant_id=1,
-            current_query="what's on the menu?",
-            db_session=db,
-            vector_store=store,
-            embedder=embedder,
-        )
-
-        assert content not in result
-
-    @pytest.mark.asyncio
-    async def test_cross_session_turn_missing_timestamp_is_excluded(self) -> None:
-        from src.services.vector.base import SearchResult
-
-        content = "A turn with no timestamp at all."
-        messages = [_make_message("user", "current question")]
-        db = _make_db_session(messages=messages)
-        embedder = _make_embedder()
-        ann = [
-            SearchResult(
-                id="cross3",
-                score=0.9,
-                payload={
-                    "role": "user",
-                    "content": content,
-                    "session_id": str(uuid.uuid4()),
-                },
-            )
-        ]
-        store = _make_vector_store(ann_results=ann)
-
-        result = await build_session_context(
-            session_id=uuid.uuid4(),
-            restaurant_id=1,
-            current_query="query",
-            db_session=db,
-            vector_store=store,
-            embedder=embedder,
-        )
-
-        assert content not in result
-
-    @pytest.mark.asyncio
-    async def test_search_filters_by_restaurant_id_not_session_id(self) -> None:
+    async def test_ann_search_is_filtered_by_session_not_restaurant(self) -> None:
         embedder = _make_embedder()
         store = _make_vector_store(ann_results=[])
         db = _make_db_session(messages=[])
+        session_id = uuid.uuid4()
 
         await build_session_context(
-            session_id=uuid.uuid4(),
+            session_id=session_id,
             restaurant_id=42,
             current_query="query",
             db_session=db,
@@ -448,7 +341,36 @@ class TestCrossSessionMemory:
         )
 
         _, kwargs = store.search.call_args
-        assert kwargs["filters"] == {"restaurant_id": 42}
+        assert kwargs["filters"] == {"session_id": session_id}
+        assert "restaurant_id" not in kwargs["filters"]
+
+    @pytest.mark.asyncio
+    async def test_no_cross_conversation_age_labels(self) -> None:
+        # All ANN hits are now same-session, so the "(from a past conversation)"
+        # labelling is gone entirely.
+        from src.services.vector.base import SearchResult
+
+        db = _make_db_session(messages=[_make_message("user", "current question")])
+        embedder = _make_embedder()
+        ann = [
+            SearchResult(
+                id="s1",
+                score=0.9,
+                payload={"role": "user", "content": "an earlier turn in this chat"},
+            )
+        ]
+        store = _make_vector_store(ann_results=ann)
+
+        result = await build_session_context(
+            session_id=uuid.uuid4(),
+            restaurant_id=1,
+            current_query="follow up",
+            db_session=db,
+            vector_store=store,
+            embedder=embedder,
+        )
+
+        assert "from a past conversation" not in result
 
 
 class TestMaybeTriggerSummary:
@@ -863,3 +785,55 @@ class TestPurgeExpiredSessions:
         deleted = await purge_expired_sessions(db, store, ttl_days=30)
 
         assert deleted == 2
+
+
+class TestBuildRecallContext:
+    """Recency-based recall: this session, else the most recent prior one --
+    never a semantically-matched random old chat."""
+
+    @staticmethod
+    def _exec(all_list=None, first_val=None) -> MagicMock:
+        scalars = MagicMock()
+        scalars.all = MagicMock(return_value=all_list or [])
+        scalars.first = MagicMock(return_value=first_val)
+        result = MagicMock()
+        result.scalars = MagicMock(return_value=scalars)
+        return result
+
+    @pytest.mark.asyncio
+    async def test_uses_current_conversation_when_it_has_turns(self) -> None:
+        msgs = [_make_message("user", "how is my food?"), _make_message("assistant", "well-rated")]
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=self._exec(all_list=msgs))
+
+        result = await build_recall_context(uuid.uuid4(), restaurant_id=1, db_session=db)
+
+        assert "[This conversation]" in result
+        assert "how is my food?" in result
+        # Only one query needed -- the current session had turns.
+        assert db.execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_prior_session_summary_when_current_is_empty(self) -> None:
+        prior = MagicMock()
+        prior.id = uuid.uuid4()
+        prior.summary = "We discussed slow service and cold food."
+        prior.last_activity_at = datetime.now(tz=UTC)
+
+        db = MagicMock()
+        # 1) current messages -> empty. 2) prior session lookup -> prior.
+        db.execute = AsyncMock(side_effect=[self._exec(all_list=[]), self._exec(first_val=prior)])
+
+        result = await build_recall_context(uuid.uuid4(), restaurant_id=1, db_session=db)
+
+        assert "[Your previous conversation" in result
+        assert "slow service" in result
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_current_and_no_prior(self) -> None:
+        db = MagicMock()
+        db.execute = AsyncMock(side_effect=[self._exec(all_list=[]), self._exec(first_val=None)])
+
+        result = await build_recall_context(uuid.uuid4(), restaurant_id=1, db_session=db)
+
+        assert result == ""

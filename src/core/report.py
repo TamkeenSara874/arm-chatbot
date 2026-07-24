@@ -94,7 +94,7 @@ async def generate_report(
         source_breakdown[src] = source_breakdown.get(src, 0) + 1
 
     top_praised, top_complained = await _aggregate_entities(
-        vector_store, qdrant_reviews_collection, restaurant_id
+        vector_store, qdrant_reviews_collection, restaurant_id, extracted_from, extracted_to
     )
 
     summary = await _generate_summary(
@@ -214,8 +214,19 @@ async def _aggregate_entities(
     vector_store: BaseVectorStore,
     collection: str,
     restaurant_id: int,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
-    """Scroll Qdrant payloads and tally entity mentions by sentiment polarity."""
+    """Scroll Qdrant payloads and tally entity mentions by sentiment polarity.
+
+    The date range is applied here too, so the top praised/complained aspects
+    cover exactly the same reviews as the Postgres metrics above. Without it the
+    entity tallies would silently span all time while the headline numbers were
+    scoped to the selected period, and the two halves of the report would
+    disagree. The Qdrant range is on the review's own timestamp (review_date_ts),
+    matching the review_date filter in _load_review_rows; bounds are widened to
+    full days the same way so the two stores select the same rows.
+    """
     praised: dict[str, int] = {}
     complained: dict[str, int] = {}
 
@@ -225,7 +236,16 @@ async def _aggregate_entities(
         if not isinstance(vector_store, QdrantStore):
             return [], []
 
-        qdrant_filter = vector_store._build_filter({"restaurant_id": restaurant_id})
+        filters: dict[str, Any] = {"restaurant_id": restaurant_id}
+        if date_from:
+            filters["date_from"] = datetime(
+                date_from.year, date_from.month, date_from.day, tzinfo=UTC
+            ).timestamp()
+        if date_to:
+            filters["date_to"] = datetime(
+                date_to.year, date_to.month, date_to.day, 23, 59, 59, tzinfo=UTC
+            ).timestamp()
+        qdrant_filter = vector_store._build_filter(filters)
         offset = None
 
         while True:
