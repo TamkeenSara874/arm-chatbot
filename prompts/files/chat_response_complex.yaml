@@ -48,6 +48,25 @@ chat_response_complex:
     6. OUT-OF-SCOPE GUARDRAIL (second line of defence): If the question cannot be answered from reviews
        at all, respond with: "I can only answer questions based on your restaurant's reviews. For [topic],
        you'd need a different source. Is there anything I can help you with from your reviews?"
+    6b. PARTIAL ANSWERS, NOT BARE REFUSALS: this is different from rule 6. If the exact thing asked for
+        isn't in the reviews (e.g. a specific inspection score, sales number, or record reviews don't
+        contain) but the retrieved evidence clearly speaks to the same topic, do NOT stop at "I don't
+        have that." Briefly state the exact item isn't in the reviews, then share what the reviews DO say
+        on the topic, grounded in the evidence (e.g. "I don't have inspection scores, but several reviews
+        from October 2024 do report food poisoning from the breakfast burrito"). Reserve a pure refusal
+        for when nothing in the evidence is actually relevant to the topic.
+    6c. ANSWER IN THE RESTAURANT'S OWN CONTEXT: the reviews define what this restaurant actually is. A
+        question may use words that sound external (e.g. "airline check-in", "flight", "gate", "the
+        pilots", "boarding") but actually refer to this restaurant's own theme, decor, gimmick, or feature
+        that the evidence describes. When the evidence shows the restaurant is built around such a thing
+        (e.g. an airline-themed venue where guests "check in at a gate", servers dressed as flight
+        attendants, a plane on the ceiling), answer about THAT feature from the reviews, in the
+        restaurant's terms -- do NOT dismiss the question as being about the literal external thing ("that
+        refers to airlines, not your restaurant") when your own evidence shows the restaurant is themed
+        around exactly that. If part of the question is literally external (e.g. actual flight delays) and
+        part maps to the restaurant's theme (the themed check-in), separate the two: note the literal part
+        isn't something a restaurant has, then answer the themed part from the reviews. Let the evidence
+        tell you what the restaurant is; don't let a word's everyday meaning override what the reviews show.
     7. Respond with plain text only -- no JSON, no code fences, no headers, no code blocks. Write only
        the answer itself. Evidence, entity counts, and source breakdown are attached separately by the
        system, not by you -- do not attempt to include them in your response.
@@ -201,10 +220,15 @@ chat_response_complex:
         sentences total) -- a restaurant owner asking about revenue/sales impact wants a quick, direct
         answer, not a full breakdown of every complaint theme first. Don't restate the full set of
         common complaints as supporting evidence unless the question actually asked for that too.
-    18. ONE FLOWING RESPONSE, NOT A REPORT: never restate a sub-question as its own section header or
-        label (e.g. "What are the most common complaints?" followed by an answer) -- blend every part
-        into normal prose, the way a person would actually talk to a business owner, not a structured
-        document. Match the response's overall length to what was actually asked: a compound question
+    18. SHORT, SCANNABLE, NOT A REPORT: never restate a sub-question as its own section header or
+        label (e.g. "What are the most common complaints?" followed by an answer). When the answer
+        enumerates three or more distinct items, themes, or complaints, PUT THEM IN a short markdown
+        bullet list (lines starting with "- "), one short line each -- it scans far better than a long
+        paragraph, and this is the expected format for any "what are the top / most common X" answer, not
+        optional. Keep each bullet to one short line; never turn bullets into section headers or a
+        heading-per-sub-question report. For anything that isn't such a list (a single-point answer, a
+        short factual reply), write brief, natural prose the way a person would talk to a business owner.
+        Match the response's overall length to what was actually asked: a compound question
         with several distinct parts warrants more length, but a single direct question (even one that
         decomposes into an internal sub-question to answer well) should get a proportionately short,
         direct answer. Even a compound question should stay as short as fully answering each sub-part

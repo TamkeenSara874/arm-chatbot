@@ -58,8 +58,8 @@ from src.core.generation import (
     select_generation,
 )
 from src.core.groundedness import check_count_groundedness
-from src.core.guardrail import check_guardrail
-from src.core.ranking import rank_results
+from src.core.guardrail import GREETING_RESPONSE, check_guardrail, detect_greeting
+from src.core.ranking import _add_highlights, rank_results
 from src.core.report import generate_report
 from src.core.retrieval import RetrievalTiming, build_retrieval_params, hybrid_retrieve
 from src.core.review_stats import (
@@ -74,6 +74,7 @@ from src.core.semantic_cache import (
     store_cached_response,
 )
 from src.core.session import (
+    build_recall_context,
     build_recent_turns_context,
     build_session_context,
     maybe_trigger_summary,
@@ -221,6 +222,36 @@ async def chat_query(
             )
         )
 
+    # Greeting fast-path -- before the cache, decomposition, and any session
+    # context. A bare "hey" has no question, but the pipeline would still
+    # assemble the session context and let the model answer it by repeating the
+    # conversation's last topic (confirmed live: "hey" returned an atmosphere
+    # summary). Deterministic and code-only so no context is ever built for it.
+    if detect_greeting(sanitized):
+        trace.emit()
+        greeting_msg_id = uuid.uuid4()
+        fire_and_forget(
+            _persist_instant_exchange(
+                session_id=body.session_id,
+                message_id=greeting_msg_id,
+                sanitized=sanitized,
+                answer=GREETING_RESPONSE,
+                model_used="greeting",
+                restaurant_id=restaurant_id,
+                embedder=embedder,
+                vector_store=vector_store,
+            ),
+            name=f"persist-greeting-{greeting_msg_id}",
+        )
+        return EventSourceResponse(
+            _yield_instant(
+                ChatResponseSchema(answer=GREETING_RESPONSE, evidence=[], confidence=1.0),
+                body.session_id,
+                greeting_msg_id,
+                model_used="greeting",
+            )
+        )
+
     # Cache check before any LLM work -- skipped on a regenerate request
     # (body.bypass_cache), which exists specifically so "Regenerate" produces
     # an actually-fresh answer instead of the same cached one it's replacing.
@@ -305,9 +336,11 @@ async def chat_query(
     # to an answer that has nothing to do with review content -- exactly the
     # bug this path exists to avoid.
     if decomposed.intent == "conversation_recall":
-        session_context = await build_session_context(
-            body.session_id, restaurant_id, sanitized, db, vector_store, embedder
-        )
+        # Recency-based, not semantic ANN: recall is about *when* things were
+        # said, not what is similar to the (topic-less) recall question. Scopes
+        # to this conversation, or the single most recent prior one if this is
+        # a fresh session -- never a random semantically-matched old chat.
+        session_context = await build_recall_context(body.session_id, restaurant_id, db)
         recall_system, recall_user = loader.format(
             "conversation_recall", query=sanitized, session_context=session_context
         )
@@ -341,6 +374,175 @@ async def chat_query(
                 ChatResponseSchema(answer=recall_answer.strip(), evidence=[], confidence=1.0),
                 body.session_id,
                 recall_msg_id,
+                model_used=settings.openai_simple_model,
+            )
+        )
+
+    # Reviewer-name fast path -- the owner asked for one specific reviewer's OWN
+    # feedback ("what did Maria say?"). Semantic retrieval on the name is the
+    # wrong tool: it matches the name as a topic and can misread a reviewer as a
+    # staff member (confirmed live -- "what did Maria say" answered about a server
+    # named Maria). Look the reviewer up directly by username and answer from their
+    # actual reviews. A name can match several people (Maria B., Maria T.); return
+    # the most recent handful across matches, or say plainly if none exist.
+    if decomposed.reviewer_name:
+        reviewer_name = decomposed.reviewer_name.strip()
+        reviewer_msg_id = uuid.uuid4()
+        reviewer_stmt = select(ReviewChunkMeta).where(
+            ReviewChunkMeta.restaurant_id == restaurant_id,
+            ReviewChunkMeta.chunk_index == 0,
+            ReviewChunkMeta.has_content.is_(True),
+            ReviewChunkMeta.username.ilike(f"%{reviewer_name}%"),
+        )
+        # Honour an explicit date/rating filter from the question ("...only from
+        # last month", "...her 1-star reviews") so a scoped reviewer question
+        # returns only that slice, not all-time reviews mislabelled as the period.
+        reviewer_filter = decomposed.date_filter
+        if reviewer_filter and reviewer_filter.from_date:
+            reviewer_stmt = reviewer_stmt.where(
+                ReviewChunkMeta.review_date
+                >= datetime.fromisoformat(reviewer_filter.from_date).replace(tzinfo=UTC)
+            )
+        if reviewer_filter and reviewer_filter.to_date:
+            # End-of-day so a to-date of the period's last day includes that day.
+            reviewer_stmt = reviewer_stmt.where(
+                ReviewChunkMeta.review_date
+                <= datetime.fromisoformat(reviewer_filter.to_date).replace(
+                    hour=23, minute=59, second=59, tzinfo=UTC
+                )
+            )
+        if decomposed.rating_filter and decomposed.rating_filter.min is not None:
+            reviewer_stmt = reviewer_stmt.where(
+                ReviewChunkMeta.rating >= decomposed.rating_filter.min
+            )
+        if decomposed.rating_filter and decomposed.rating_filter.max is not None:
+            reviewer_stmt = reviewer_stmt.where(
+                ReviewChunkMeta.rating <= decomposed.rating_filter.max
+            )
+        reviewer_rows = (
+            (
+                await db.execute(
+                    # Group each person's reviews together (a name like "Natalie"
+                    # can match several distinct people), most recent first within
+                    # a person, so the answer can report each one separately.
+                    reviewer_stmt.order_by(
+                        ReviewChunkMeta.username, ReviewChunkMeta.review_date.desc()
+                    ).limit(12)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        if not reviewer_rows:
+            # Distinguish "no such reviewer" from "that reviewer, but not in the
+            # filtered slice" so a scoped miss doesn't read as the person not existing.
+            scoped = (
+                " matching that filter"
+                if (decomposed.date_filter or decomposed.rating_filter)
+                else ""
+            )
+            no_match_answer = (
+                f"I couldn't find any reviews from a reviewer named {reviewer_name}{scoped}. "
+                "They may not have left a review, or it might be under a slightly different name."
+            )
+            trace.emit()
+            fire_and_forget(
+                _persist_instant_exchange(
+                    session_id=body.session_id,
+                    message_id=reviewer_msg_id,
+                    sanitized=sanitized,
+                    answer=no_match_answer,
+                    model_used="reviewer_lookup",
+                    restaurant_id=restaurant_id,
+                    embedder=embedder,
+                    vector_store=vector_store,
+                ),
+                name=f"persist-reviewer-{reviewer_msg_id}",
+            )
+            return EventSourceResponse(
+                _yield_instant(
+                    ChatResponseSchema(answer=no_match_answer, evidence=[], confidence=1.0),
+                    body.session_id,
+                    reviewer_msg_id,
+                    model_used="reviewer_lookup",
+                )
+            )
+
+        reviewer_evidence = [
+            EvidenceItem(
+                snippet=(row.full_review or row.chunk_text or ""),
+                username=row.username,
+                rating=row.rating,
+                source=row.source,
+                sentiment=row.sentiment_label,
+                # sentiment_rating_agree is True/False/None; only an explicit
+                # False is a real rating-vs-text conflict.
+                sentiment_conflict=(row.sentiment_rating_agree is False),
+                date_inferred=bool(row.date_inferred),
+                review_date=(row.review_date.date().isoformat() if row.review_date else None),
+                # Not reranked -- these are the reviewer's own reviews, pulled by
+                # name, so there is no calibrated relevance score to show.
+                relevance=1.0,
+                relevance_calibrated=False,
+            )
+            for row in reviewer_rows
+        ]
+        # Highlight the sentence in each review most relevant to the question,
+        # the same way ranked evidence does, so reviewer-lookup cards aren't the
+        # only ones shown without a highlight. Uses the warm local reranker only.
+        await _add_highlights(reviewer_evidence, sanitized, settings.reranker_model)
+
+        loader = get_prompt_loader()
+        reviewer_system, reviewer_user = loader.format(
+            "chat_response_simple",
+            query=sanitized,
+            session_context="",
+            corrections="None",
+            unverified_note="None",
+            evidence=format_evidence(reviewer_evidence),
+        )
+        t_reviewer = time.perf_counter()
+        reviewer_raw = await simple_client.complete(
+            reviewer_user,
+            reviewer_system,
+            usage_callback=lambda p, c, ca: trace.record_tokens(
+                settings.openai_simple_model, p, c, ca
+            ),
+        )
+        trace.generation_ms = (time.perf_counter() - t_reviewer) * 1000.0
+        trace.generation_model = settings.openai_simple_model
+        trace.evidence_count = len(reviewer_evidence)
+        trace.emit()
+
+        # No name redaction here: the owner named this reviewer and is asking for
+        # that person's own feedback, so their identity is the subject of the
+        # answer, not something to hide. validate_llm_output still guards leaks.
+        reviewer_structured = validate_llm_output(
+            ChatResponseSchema(
+                answer=clean_answer_text(reviewer_raw),
+                evidence=reviewer_evidence,
+                confidence=0.85,
+            )
+        )
+        fire_and_forget(
+            _persist_instant_exchange(
+                session_id=body.session_id,
+                message_id=reviewer_msg_id,
+                sanitized=sanitized,
+                answer=reviewer_structured.answer,
+                model_used=settings.openai_simple_model,
+                restaurant_id=restaurant_id,
+                embedder=embedder,
+                vector_store=vector_store,
+            ),
+            name=f"persist-reviewer-{reviewer_msg_id}",
+        )
+        return EventSourceResponse(
+            _yield_instant(
+                reviewer_structured,
+                body.session_id,
+                reviewer_msg_id,
                 model_used=settings.openai_simple_model,
             )
         )
@@ -553,19 +755,31 @@ async def chat_query(
         logger.warning("shared_query_embed_failed", error=str(exc))
         sanitized_vector = None
 
-    session_context_task = asyncio.create_task(
-        build_session_context(
-            session_id=body.session_id,
-            restaurant_id=restaurant_id,
-            current_query=sanitized,
-            db_session=db,
-            vector_store=vector_store,
-            embedder=embedder,
-            recent_k=settings.session_recent_messages,
-            relevant_k=settings.session_relevant_k,
-            token_budget=settings.session_context_token_budget,
-            precomputed_query_vector=sanitized_vector,
+    # Only assemble session context when the decomposer judged the query to
+    # actually depend on the prior conversation. A self-contained question
+    # (depends_on_context=False) gets None here, so generation runs with an empty
+    # session context and cannot be pulled off-topic by an unrelated earlier turn
+    # (confirmed live: "what does Maria say?" asked right after a food-poisoning
+    # discussion otherwise bled into a food-poisoning answer). References in a
+    # genuine follow-up are already resolved into rephrased_query at decomposition,
+    # and depends_on_context defaults to True whenever the model is unsure.
+    session_context_task = (
+        asyncio.create_task(
+            build_session_context(
+                session_id=body.session_id,
+                restaurant_id=restaurant_id,
+                current_query=sanitized,
+                db_session=db,
+                vector_store=vector_store,
+                embedder=embedder,
+                recent_k=settings.session_recent_messages,
+                relevant_k=settings.session_relevant_k,
+                token_budget=settings.session_context_token_budget,
+                precomputed_query_vector=sanitized_vector,
+            )
         )
+        if decomposed.depends_on_context
+        else None
     )
 
     # Semantic cache check. Uses the decomposed/rephrased query (context- and
@@ -836,10 +1050,20 @@ async def submit_correction(
     )
     decomposed = await decompose_query(decomp_client, decomp_user, decomp_system)
 
+    # Capture these before store_correction runs: it commits internally (the
+    # vote insert + consensus update), which expires every ORM object loaded on
+    # this session -- `session` and `user_msg` included. Reading an expired
+    # attribute afterwards triggers an implicit async refresh with no greenlet
+    # set up on this path, raising sqlalchemy MissingGreenlet -> a 500 that the
+    # browser surfaces only as a bare "Failed to fetch". restaurant_id is
+    # already the JWT/header-derived value (== session.restaurant_id, guarded
+    # above), so the local is exact, not an approximation.
+    original_query = user_msg.content
+
     correction_id, is_consensus = await store_correction(
         session_id=body.session_id,
-        restaurant_id=session.restaurant_id,
-        original_query=user_msg.content,
+        restaurant_id=restaurant_id,
+        original_query=original_query,
         original_response=original_response,
         corrected_response=body.corrected_response,
         intent=decomposed.intent,
@@ -853,15 +1077,15 @@ async def submit_correction(
     # Bust the cache entry for this exact query text -- otherwise a repeat of
     # the same question would keep serving the pre-correction cached answer
     # for the rest of the TTL, silently ignoring the correction just made.
-    await cache.invalidate_query(session.restaurant_id, user_msg.content)
+    await cache.invalidate_query(restaurant_id, original_query)
     # Also bust the semantic tier: it's keyed on decomposed.rephrased_query,
     # not the raw text above, and separately maintains a Qdrant index point --
     # confirmed live that skipping this left a stale semantic hit still
     # serving the pre-correction answer even after the raw-text key was gone.
-    retrieval_query = decomposed.rephrased_query.strip() or user_msg.content
+    retrieval_query = decomposed.rephrased_query.strip() or original_query
     await invalidate_cached_response(
         retrieval_query,
-        session.restaurant_id,
+        restaurant_id,
         vector_store,
         cache,
         get_settings().qdrant_collection_chat_cache,

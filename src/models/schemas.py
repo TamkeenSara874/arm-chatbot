@@ -112,11 +112,27 @@ class DecomposedQuery(BaseModel):
     intent: QueryIntent
     aspect_filter: str | None = None
     sentiment_filter: str | None = None
+    # Set when the question asks for a SPECIFIC REVIEWER's own words/opinion
+    # ("what did Maria say?", "what did Maria think of the food?", "show me
+    # Maria's review") -- the name to look up against the reviewer username,
+    # so retrieval returns that reviewer's actual reviews rather than semantically
+    # matching the name as a topic (which misread reviewer "Maria" as a server).
+    # None for every question not about one named reviewer's own feedback; do NOT
+    # set it for "what do customers say ABOUT Maria" (a staff mention in review text).
+    reviewer_name: str | None = None
     entities: list[str] = []
     needs_aggregation: bool = False
     complexity: Literal["simple", "complex"] = "simple"
     sub_queries: list[str] = []
     rephrased_query: str = ""
+    # True only when the CURRENT query can't be understood without the prior
+    # conversation (an unresolved pronoun/reference/bare follow-up). Gates whether
+    # the earlier conversation is shown to the answer step at all: a self-contained
+    # question (depends_on_context=False) gets NO session context, so an unrelated
+    # earlier topic can't bleed into its answer. Defaults False -- when in doubt the
+    # decomposition prompt is told to set True, so the safe direction (keep context)
+    # is an explicit model decision, not this default.
+    depends_on_context: bool = False
     # A comparison question can name more than one platform ("why is my Yelp
     # rating lower than Google?") -- a single-value filter couldn't express
     # "just these two, not Tripadvisor/OpenTable too", which is exactly why

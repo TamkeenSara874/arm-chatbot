@@ -59,8 +59,20 @@ query_decomposition:
                               no evidence, no confidence score based on reviews. Never classify this as
                               factual (which implies review evidence is needed) or ui_question (CareBot
                               has no visibility into this chatbot's own conversation history).
-    - out_of_scope          : question has nothing to do with restaurant reviews (weather, current events, general knowledge)
-    - ui_question           : question is about navigating or using the AIO platform/dashboard itself,
+    - out_of_scope          : question has no possible connection to ANY restaurant's reviews -- general
+                              knowledge, weather, sports, stock prices, current events, other businesses,
+                              math/coding, personal or medical advice. IMPORTANT: do NOT use out_of_scope
+                              for a topic that COULD plausibly appear in this restaurant's own reviews,
+                              even an unusual one -- a theme, decor, a gimmick, an event, the ambiance, the
+                              location, a specific experience. You cannot see the reviews, so you cannot
+                              know whether they cover it; classify these as specific_aspect/factual/
+                              aggregation and let the answer stage say honestly if no reviews mention it,
+                              instead of pre-emptively refusing. E.g. for an airline-themed restaurant,
+                              "do reviews mention the airplane decor / the check-in gate" is
+                              specific_aspect, not out_of_scope. Reserve out_of_scope for topics that
+                              simply cannot be about this restaurant's guest experience at all (the
+                              weather, a stock price, who won the game).
+    - ui_question          : question is about navigating or using the AIO platform/dashboard itself,
                               not this report feature specifically and not review content
                               (e.g. "why is this icon red?", "how do I switch restaurants?",
                               "what does the confidence score mean?", "how do I log in?",
@@ -91,7 +103,20 @@ query_decomposition:
     on its own -- classify based on the CURRENT query's own wording, not the topic of prior turns. E.g. if
     the previous turns were about improvement suggestions or complaints, and the current query is "total
     positive reviews" or "how many 1-star reviews", classify it as count_query on its own merits -- do not
-    let the ongoing conversational theme pull it toward improvement/aggregation.
+    let the ongoing conversational theme pull it toward improvement/aggregation. This applies to EVERY
+    field, not just intent: reviewer_name, the date/rating/source filters, theme_keywords, and the
+    exact-stat flags are all set from the CURRENT query's own wording. A self-contained question that
+    names a person ("what does Maria say?") sets reviewer_name to that person no matter what earlier turns
+    were about; never drop or change a field because a prior turn was on a different topic.
+
+    DEPENDS_ON_CONTEXT: set true ONLY when the CURRENT query cannot be understood on its own and needs the
+    prior conversation to interpret -- an unresolved pronoun or reference ("what about that?", "and the
+    desserts?", "why is that?", "the same for last month", "tell me more", "what else?"), or a bare
+    elliptical follow-up. Set false for any question that is complete and self-contained on its own, even
+    if it happens to share a topic with earlier turns (e.g. "what does Maria say?", "how many 1-star
+    reviews?", "what's my overall rating?", "what do people say about the pasta?"). When genuinely unsure,
+    set true. This flag decides whether the earlier conversation is shown to the answer step at all, so
+    that a self-contained question is never pulled off-topic by an unrelated earlier discussion.
 
     COMPLEXITY:
     - simple  : factual, single-aspect, no aggregation needed
@@ -108,6 +133,7 @@ query_decomposition:
     DATE_FILTER: if the query mentions a time period ("last month", "this year", "since January", "past 3 months"), convert to ISO date range {{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}}, using the "Today's date" given above as the reference point (not any date you might otherwise assume). If no time filter, output null. VAGUE TIME CONVENTION: "recently" or "lately" means the last 30 days. "a while back" or "not long ago" means the last 90 days. Apply these mappings when the user does not specify an explicit period.
     COMPARE_DATE_FILTER: only for a TIME-PERIOD comparison question (e.g. "how has this changed since last month", "compared to last week", "is this better than last quarter"). date_filter must hold the current/more-recent period and compare_date_filter the earlier period being compared against -- both as {{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}}, using the "Today's date" given above as the reference point. E.g. if today is 2026-07-06 and the query says "since last month": date_filter = 2026-07-01 to 2026-07-06, compare_date_filter = 2026-06-01 to 2026-06-30. If the query gives no explicit current-period bound (e.g. just "vs last month"), default date_filter to the last 30 days. LONGER LOOKBACKS ("over the last N years", "since 2020", "compared to 3 years ago"): split the whole lookback into two equal, adjacent spans rather than two single-day anchors -- date_filter = the more recent half of the lookback, compare_date_filter = the earlier half. E.g. if today is 2026-07-08 and the query says "how did reviews improve over the last 2 years": date_filter = 2025-07-08 to 2026-07-08, compare_date_filter = 2024-07-08 to 2025-07-08 (NOT single days 2026-07-08 and 2024-07-08). NEVER set from_date equal to to_date for either period in a comparison -- a comparison always needs two real, non-empty spans of time, not two single-day snapshots, unless the user is explicitly asking about one specific calendar date. For any non-time-period comparison, or any query without comparison phrasing, output null for compare_date_filter.
     RATING_FILTER: if the query mentions a star rating condition ("under 3 stars", "1-star reviews", "rating below 4"), extract as {{"min": N, "max": N}} using the 1-5 scale. If no rating filter, output null.
+    REVIEWER_NAME: set this to a person's name ONLY when the question asks for that specific reviewer's OWN feedback -- what THEY wrote/said/thought/rated ("what did Maria say about us?", "what did Maria think of the food?", "show me Maria's review", "how did John rate us?"). Output just the name as written (e.g. "Maria", "John"), used to look the person up against the reviewer's name so the answer comes from THAT reviewer's actual reviews, not a topic search. CRITICAL: do NOT set this when the question asks what OTHER customers said ABOUT a person, e.g. a staff member ("what do customers say about Maria?", "how is Maria as a server?", "is our bartender John any good?") -- that person is mentioned inside review TEXT, not the reviewer field, so leave reviewer_name null and classify intent normally (specific_aspect/aggregation). Leave it null when no specific person is named.
     SOURCE_FILTER: set this when the query names one or more specific review platforms and the evidence shown should be restricted to just those platforms -- e.g. "why is my rating on Yelp so much lower than on Google?" -> ["Yelp", "Google"]; "what do people say about the food on Tripadvisor?" -> ["Tripadvisor"]; "how does my OpenTable feedback compare to Google?" -> ["OpenTable", "Google"]. Output a list of the exact platform names mentioned (valid values: "Google", "Yelp", "Tripadvisor", "OpenTable", "Nugget"), or an empty list [] if the query doesn't restrict to specific platform(s). This only restricts which reviews are used as qualitative evidence -- for a question asking WHY/HOW a rating differs between platforms, ALSO set breakdown_dimension="source" (see below) so the exact per-platform average is still computed correctly across ALL reviews, not just the restricted evidence sample.
     BREAKDOWN_DIMENSION: set this when the query asks for an exact distribution or ranking ACROSS THE WHOLE RESTAURANT by one specific dimension -- "which review source contributes the most/least/exactly N reviews", "breakdown by rating", "how many reviews come from each platform", "distribution of sentiment across all reviews". Output exactly one of "source", "rating", or "sentiment" (matching which dimension the question is about), or null if the question isn't asking for a whole-dataset breakdown by one of these three. This is different from a normal aggregation/improvement question (e.g. "what do people say about service") -- only set this when the question's core ask IS the distribution/ranking itself, computed exactly, not a qualitative synthesis. Never set this for a question about written-text presence (e.g. "how many reviews have no written text") -- see CONTENT_FILTER below instead.
                               ALSO set breakdown_dimension="source" for a question asking WHY or HOW a
@@ -131,11 +157,13 @@ query_decomposition:
       "intent": "<intent_value>",
       "aspect_filter": "<aspect or null>",
       "sentiment_filter": "<Positive|Negative|Mixed|Neutral|null>",
+      "reviewer_name": "<name of the reviewer whose OWN feedback is asked for, or null>",
       "entities": ["<food item or staff name or topic>"],
       "needs_aggregation": <true|false>,
       "complexity": "<simple|complex>",
       "sub_queries": ["<sub-question 1>", "<sub-question 2>"],
       "rephrased_query": "<clear rewrite of the original query>",
+      "depends_on_context": <true|false>,
       "source_filter": ["<Google|Yelp|Tripadvisor|OpenTable|Nugget>", ...],
       "date_filter": {{"from": "YYYY-MM-DD", "to": "YYYY-MM-DD"}} or null,
       "rating_filter": {{"min": 1, "max": 5}} or null,

@@ -124,6 +124,77 @@ class TestSubmitCorrectionGuardrails:
         response = client.post("/api/v1/chat/correct", json=_correct_body())
         assert response.status_code == 401
 
+    def test_completes_after_store_correction_expires_the_orm_objects(self, app: FastAPI) -> None:
+        """Regression for a MissingGreenlet 500 that surfaced as "Failed to fetch".
+
+        store_correction commits internally, which expires every ORM object on
+        the session -- so any attribute read on `session` or `user_msg` after it
+        triggers an implicit async refresh with no greenlet, crashing the route.
+        This drives the full happy path and makes both objects raise if touched
+        after store_correction runs; the route must instead use the values it
+        captured beforehand (the JWT restaurant_id and the query string).
+        """
+        expired = RuntimeError("greenlet_spawn has not been called (object expired)")
+
+        user_msg = MagicMock()
+        user_msg.session_id = uuid.uuid4()
+        user_msg.content = "why is my rating low"
+        user_msg.created_at = datetime.now(UTC)
+
+        session = MagicMock()
+        session.restaurant_id = RESTAURANT_ID
+
+        db = MagicMock()
+        # db.get returns user_msg first, then session (the route's two lookups).
+        db.get = AsyncMock(side_effect=[user_msg, session])
+        # The assistant-message lookup that follows.
+        assistant = MagicMock(content="because service was slow")
+        execute_result = MagicMock()
+        execute_result.scalar_one_or_none = MagicMock(return_value=assistant)
+        scalars = MagicMock()
+        scalars.all = MagicMock(return_value=[])
+        execute_result.scalars = MagicMock(return_value=scalars)
+        db.execute = AsyncMock(return_value=execute_result)
+        app.dependency_overrides[get_db] = lambda: db
+
+        cache = MagicMock()
+        cache.invalidate_query = AsyncMock()
+        app.dependency_overrides[get_cache] = lambda: cache
+
+        def expire_orm_objects(*_args, **_kwargs):
+            # Mimic SQLAlchemy expiring attributes on commit: any later read
+            # raises, exactly as the real expired lazy-load would.
+            type(user_msg).content = property(lambda _self: (_ for _ in ()).throw(expired))
+            type(session).restaurant_id = property(lambda _self: (_ for _ in ()).throw(expired))
+            return (uuid.uuid4(), False)
+
+        client = TestClient(app, raise_server_exceptions=False)
+        with (
+            patch("src.api.routes.chat.session_in_cooldown", new=AsyncMock(return_value=False)),
+            patch("src.api.routes.chat.flag_injection", return_value=False),
+            patch("src.api.routes.chat.check_stat_contradiction", new=AsyncMock(return_value=None)),
+            patch("src.api.routes.chat.build_recent_turns_context", new=AsyncMock(return_value="")),
+            patch(
+                "src.api.routes.chat.decompose_query",
+                new=AsyncMock(return_value=MagicMock(intent="specific_aspect", rephrased_query="")),
+            ),
+            patch(
+                "src.api.routes.chat.store_correction",
+                new=AsyncMock(side_effect=expire_orm_objects),
+            ),
+            patch("src.api.routes.chat.invalidate_cached_response", new=AsyncMock()),
+        ):
+            response = client.post(
+                "/api/v1/chat/correct",
+                json=_correct_body(),
+                headers={"Authorization": f"Bearer {_mint_jwt()}"},
+            )
+
+        assert response.status_code == 201
+        # Proves the post-commit code used the captured locals, not the expired
+        # ORM objects: restaurant_id from the JWT, query string captured earlier.
+        cache.invalidate_query.assert_awaited_once_with(RESTAURANT_ID, "why is my rating low")
+
 
 class TestRejectCorrectionRoute:
     def test_missing_jwt_is_rejected(self, app: FastAPI) -> None:
