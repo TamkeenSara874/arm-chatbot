@@ -342,6 +342,37 @@ class TestAggregateEntities:
         assert praised == []
         assert complained == []
 
+    @pytest.mark.asyncio
+    async def test_date_range_forwarded_to_qdrant_filter(self) -> None:
+        from src.services.vector.qdrant_store import QdrantStore
+
+        store = MagicMock(spec=QdrantStore)
+        store._build_filter = MagicMock(return_value=None)
+        store.client = MagicMock()
+        store.client.scroll = AsyncMock(return_value=([], None))
+
+        await _aggregate_entities(store, "review_chunks", 1, date(2025, 1, 1), date(2025, 6, 30))
+
+        filters = store._build_filter.call_args[0][0]
+        assert filters["restaurant_id"] == 1
+        # Epoch bounds are passed so the entity scroll covers the same window as
+        # the DB metrics; the end bound is widened to end-of-day, so it sorts after.
+        assert filters["date_to"] > filters["date_from"]
+
+    @pytest.mark.asyncio
+    async def test_no_date_range_omits_date_filter_keys(self) -> None:
+        from src.services.vector.qdrant_store import QdrantStore
+
+        store = MagicMock(spec=QdrantStore)
+        store._build_filter = MagicMock(return_value=None)
+        store.client = MagicMock()
+        store.client.scroll = AsyncMock(return_value=([], None))
+
+        await _aggregate_entities(store, "review_chunks", 1)
+
+        filters = store._build_filter.call_args[0][0]
+        assert filters == {"restaurant_id": 1}
+
 
 class TestGenerateReport:
     def _make_db(self, rows=None):
