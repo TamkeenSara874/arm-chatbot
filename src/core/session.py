@@ -18,14 +18,6 @@ logger = structlog.get_logger()
 
 SESSION_MEMORY_COLLECTION = "session_memory"
 
-# build_session_context's relevant-turn search now spans this restaurant's
-# entire session_memory history, not just the current session -- unlike the
-# old session-scoped search (naturally bounded by how long one conversation
-# runs), an unbounded restaurant-wide search could surface something many
-# months old that's no longer representative. Cap how far back a
-# cross-session match can come from.
-MAX_CROSS_SESSION_AGE_DAYS = 90
-
 # Below this, a recent-turn is still part of the active back-and-forth --
 # no point annotating something from 5 minutes ago as "old."
 _RECENT_TURN_STALE_THRESHOLD_MINUTES = 30
@@ -143,6 +135,79 @@ async def build_recent_turns_context(
     return enforce_token_budget("\n".join(lines), max_tokens=token_budget)
 
 
+async def build_recall_context(
+    session_id: uuid.UUID,
+    restaurant_id: int,
+    db_session: AsyncSession,
+    recent_k: int = 6,
+    token_budget: int = 1500,
+) -> str:
+    """Recency-ordered history for the conversation_recall path only.
+
+    "What were we talking about?" is a meta-question about the conversation, not
+    a topic query -- so answering it by semantic ANN (as build_session_context
+    does) matched the meaningless query embedding against random old turns and
+    surfaced an unrelated past chat. Recall must be by *recency*, not similarity.
+
+    Two scopes, tried in order:
+      1. This conversation's own turns, if it has any -> "[This conversation]".
+      2. Otherwise the single most recent *prior* conversation for this
+         restaurant -> "[Your previous conversation, N day(s) ago]", using its
+         rolling summary if present, else its last turns.
+
+    Deliberately never blends the two: a fresh session recalls the last chat, an
+    ongoing session recalls itself -- it never mixes an old chat into a live one.
+    """
+    stmt = (
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(recent_k * 2)
+    )
+    result = await db_session.execute(stmt)
+    current = list(reversed(result.scalars().all()))
+
+    if current:
+        lines = [f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}" for m in current]
+        return enforce_token_budget("[This conversation]\n" + "\n".join(lines), token_budget)
+
+    # Fresh session: fall back to the most recent prior conversation that
+    # actually has messages, for this restaurant.
+    prior_stmt = (
+        select(ChatSession)
+        .where(ChatSession.restaurant_id == restaurant_id)
+        .where(ChatSession.id != session_id)
+        .where(ChatSession.messages.any())
+        .order_by(ChatSession.last_activity_at.desc())
+        .limit(1)
+    )
+    prior = (await db_session.execute(prior_stmt)).scalars().first()
+    if prior is None:
+        return ""
+
+    now = datetime.now(tz=UTC)
+    last_active = prior.last_activity_at or now
+    if last_active.tzinfo is None:
+        last_active = last_active.replace(tzinfo=UTC)
+    days_ago = max(0, int((now - last_active).total_seconds() / 86400))
+    header = f"[Your previous conversation, {days_ago} day(s) ago]"
+
+    if prior.summary:
+        return enforce_token_budget(f"{header}\n{prior.summary}", token_budget)
+
+    prior_msgs_stmt = (
+        select(ChatMessage)
+        .where(ChatMessage.session_id == prior.id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(recent_k * 2)
+    )
+    prior_msgs = list(reversed((await db_session.execute(prior_msgs_stmt)).scalars().all()))
+    if not prior_msgs:
+        return ""
+    lines = [f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}" for m in prior_msgs]
+    return enforce_token_budget(f"{header}\n" + "\n".join(lines), token_budget)
+
+
 async def build_session_context(
     session_id: uuid.UUID,
     restaurant_id: int,
@@ -157,16 +222,16 @@ async def build_session_context(
 ) -> str:
     """Build a combined context string for injection into the chat prompt.
 
-    Combines three layers (in order of priority):
+    Scoped entirely to the CURRENT conversation -- it never pulls from other
+    sessions. Combines three layers (in order of priority):
     1. A rolling LLM summary if one exists on the session row (covers distant history)
-    2. The top relevant_k past turns semantically similar to the current query --
-       searched across this restaurant's ENTIRE session_memory history (filtered
-       by restaurant_id, not session_id), so a relevant exchange from a past,
-       separate conversation surfaces here too, not just turns from the current
-       session. A turn from a different session is labeled with how long ago it
-       happened so the model can judge whether it's likely still current, and
-       anything older than MAX_CROSS_SESSION_AGE_DAYS is excluded outright.
+    2. The top relevant_k turns of THIS session semantically similar to the
+       current query (surfacing relevant older turns past the recent window).
     3. The last recent_k message pairs verbatim for immediate continuity
+
+    Cross-conversation recall deliberately lives only in build_recall_context,
+    reached by the explicit conversation_recall intent -- so a normal review
+    question is never answered with bleed from an unrelated past chat.
 
     The combined block is trimmed to token_budget before returning.
 
@@ -195,32 +260,29 @@ async def build_session_context(
             if precomputed_query_vector is not None
             else await embedder.embed_one(current_query)
         )
+        # Scoped to THIS session, not the restaurant. The previous restaurant-wide
+        # search pulled turns from unrelated past conversations into every
+        # answer -- a normal review question ("what do guests say about service?")
+        # would get context bleed from a different chat. Cross-conversation
+        # recall now belongs solely to the explicit conversation_recall path
+        # (build_recall_context), which is recency-based rather than by semantic
+        # similarity to the current query. This search just surfaces the
+        # relevant *older* turns of the current conversation, past the recent
+        # window below.
         ann_results = await vector_store.search(
             SESSION_MEMORY_COLLECTION,
             query_vector,
             limit=relevant_k + recent_k,
-            filters={"restaurant_id": restaurant_id},
+            filters={"session_id": session_id},
         )
-        now_ts = datetime.now(tz=UTC).timestamp()
         for ann_result in ann_results:
             content = ann_result.payload.get("content", "")
             role = ann_result.payload.get("role", "user")
             if not content or content in recent_contents:
                 continue
 
-            age_note = ""
-            if ann_result.payload.get("session_id") != str(session_id):
-                created_at_ts = ann_result.payload.get("created_at_ts")
-                if not created_at_ts:
-                    continue
-                days_ago = (now_ts - created_at_ts) / 86400
-                if days_ago > MAX_CROSS_SESSION_AGE_DAYS:
-                    continue
-                if days_ago >= 1:
-                    age_note = f" (from a past conversation, {int(days_ago)} day(s) ago)"
-
             label = "User" if role == "user" else "Assistant"
-            turn = f"{label}: {content}{age_note}"
+            turn = f"{label}: {content}"
 
             # The paired reply is rendered as something the assistant said
             # *previously*, not as evidence. Without that framing the model
